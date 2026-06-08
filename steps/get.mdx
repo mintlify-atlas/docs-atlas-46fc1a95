@@ -1,0 +1,208 @@
+---
+title: "The get step: fetch versioned resources in Concourse"
+sidebarTitle: "get"
+description: "Use the get step to fetch a specific version of a resource into your build, optionally gating on prior jobs and auto-triggering when new versions appear."
+---
+
+The `get` step fetches a versioned resource from an external system and places its contents into the build's working directory. Every subsequent step in the same job can then read from the fetched artifact by name. Because Concourse tracks exactly which version was fetched, `get` steps form the backbone of pipeline chaining: a downstream job can declare that it only wants versions that have already passed through one or more upstream jobs, creating a controlled promotion flow.
+
+## Fields
+
+<ParamField path="get" type="string" required>
+  The logical name of this step. By default this is also the name of the
+  resource to fetch. The fetched contents are placed in a directory with this
+  name inside the build's working directory.
+</ParamField>
+
+<ParamField path="resource" type="string">
+  Override the resource to fetch. Useful when you want to give the fetched
+  directory a different name from the resource itself — for example, fetching
+  `my-app` but referring to it as `app` in subsequent steps.
+</ParamField>
+
+<ParamField path="version" type="string | map">
+  Which version of the resource to fetch. Accepts:
+
+  - `latest` *(default)* — fetch the most recent version.
+  - `every` — process every new version in order, never skipping one even if
+    multiple appear between builds.
+  - A specific version map, e.g. `{ref: "abc123"}` or
+    `{digest: "sha256:…"}` — pin to an exact version.
+</ParamField>
+
+<ParamField path="passed" type="string[]">
+  A list of job names. When set, Concourse only fetches versions that have
+  successfully flowed through **all** of the listed jobs. This is how you
+  chain jobs together into a pipeline graph — see [Pipeline chaining with
+  `passed`](#pipeline-chaining-with-passed) below.
+</ParamField>
+
+<ParamField path="params" type="map">
+  Arbitrary key/value parameters forwarded to the resource's `in` script.
+  What keys are valid depends entirely on the resource type being fetched.
+</ParamField>
+
+<ParamField path="trigger" type="boolean">
+  When `true`, a new version of this resource automatically triggers a new
+  build of the containing job. Defaults to `false`. Only meaningful on the
+  first `get` that introduces the resource to the job's version set.
+</ParamField>
+
+<ParamField path="tags" type="string[]">
+  Run the check and get operations on workers that have **all** of the listed
+  tags. Useful for routing to specific worker pools (e.g. `[aws, us-east-1]`).
+</ParamField>
+
+<ParamField path="timeout" type="string">
+  Abort the step if it does not complete within the given duration. Uses Go
+  duration syntax: `30m`, `1h`, `90s`, etc. Note that fetching the resource
+  type's own image does **not** count against this timeout.
+</ParamField>
+
+<ParamField path="attempts" type="integer">
+  Retry the step up to this many times on failure. The build succeeds as soon
+  as any attempt succeeds. Attempts are counted starting from 1, so
+  `attempts: 3` means up to three total tries.
+</ParamField>
+
+---
+
+## Examples
+
+<CodeGroup>
+
+```yaml Basic trigger
+- get: my-repo
+  trigger: true
+```
+
+```yaml Passed constraint
+- get: my-repo
+  passed: [unit-tests, integration-tests]
+```
+
+```yaml Pin to a specific version
+- get: my-image
+  version: {digest: "sha256:abc123def456"}
+```
+
+```yaml Process every version
+- get: release-notes
+  version: every
+  trigger: true
+```
+
+```yaml Override resource name
+- get: app
+  resource: my-app-git-repo
+  trigger: true
+```
+
+</CodeGroup>
+
+---
+
+## Pipeline chaining with `passed`
+
+The `passed` field is what turns a collection of independent jobs into a directed acyclic graph. When a `get` step lists one or more job names in `passed`, Concourse only considers versions of that resource that have **already been consumed by — and caused a successful build in — every listed job**.
+
+```yaml
+jobs:
+  - name: unit-tests
+    plan:
+      - get: repo
+        trigger: true
+      - task: run-unit-tests
+        file: repo/ci/unit.yml
+
+  - name: integration-tests
+    plan:
+      - get: repo
+        passed: [unit-tests]   # only versions that passed unit-tests
+        trigger: true
+      - task: run-integration-tests
+        file: repo/ci/integration.yml
+
+  - name: deploy-staging
+    plan:
+      - get: repo
+        passed: [unit-tests, integration-tests]  # must pass both
+      - put: staging-cf
+        params:
+          manifest: repo/manifest.yml
+```
+
+<Note>
+  If you list multiple jobs in `passed`, Concourse finds the **intersection**
+  of versions that passed through all of them. This means the deploy will only
+  proceed with a commit that has successfully made it through every gate.
+</Note>
+
+---
+
+## `version: every` vs `version: latest`
+
+<Tabs>
+  <Tab title="version: latest (default)">
+    Concourse fetches only the newest available version that satisfies any
+    `passed` constraints. If three new commits appear while a build is running,
+    the next triggered build will jump straight to the third commit — the
+    first two are skipped.
+
+    ```yaml
+    - get: repo
+      trigger: true
+      # version: latest is the default
+    ```
+
+    Use `latest` when you only care about the current state of the world and
+    intermediate versions are not important (e.g. deploying the latest image).
+  </Tab>
+  <Tab title="version: every">
+    Concourse processes each new version individually, in order. If three new
+    commits appear while a build is running, Concourse queues three separate
+    builds — one for each commit — and runs them sequentially.
+
+    ```yaml
+    - get: commits
+      version: every
+      trigger: true
+    ```
+
+    Use `every` when every single version matters, such as publishing
+    individual release artifacts, running audits, or processing event streams.
+  </Tab>
+</Tabs>
+
+<Warning>
+  Using `version: every` with a high-velocity resource (e.g. a busy git
+  branch) can create a large backlog of queued builds. Consider whether your
+  pipeline truly needs to process every single version before enabling this.
+</Warning>
+
+---
+
+## Fetched directory layout
+
+After a successful `get`, the resource contents are available at a path equal
+to the step's `get` name (or the `resource` override) relative to the build's
+working directory. Subsequent `task` steps automatically receive all fetched
+directories as inputs by default.
+
+```yaml
+- get: my-repo           # available at ./my-repo/
+- get: version-file      # available at ./version-file/
+- task: build
+  config:
+    inputs:
+      - name: my-repo
+      - name: version-file
+    run:
+      path: my-repo/ci/build.sh
+```
+
+<Tip>
+  If you need the fetched directory to have a different name inside a task,
+  use the task's `input_mapping` to rename it without changing the `get` step
+  itself.
+</Tip>

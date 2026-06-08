@@ -1,0 +1,152 @@
+---
+title: "fly worker commands: list, land, retire, and prune workers"
+sidebarTitle: "Worker Commands"
+description: "Inspect and manage Concourse workers with fly: list state, gracefully drain for maintenance, permanently retire, or force-prune stalled workers."
+---
+
+Workers are the machines that run your builds. Each worker registers with the Concourse TSA (Traffic Signing Authority), reports its platform and tags, and accepts container scheduling from the ATC (the Concourse scheduler). The `fly` CLI gives operators visibility into every registered worker and full control over the worker lifecycle — from graceful maintenance drains to emergency removal of crashed nodes.
+
+## fly workers
+
+List all workers registered with the Concourse cluster along with their state, platform, container count, tags, team affiliation, and version.
+
+<CodeGroup>
+
+```bash Basic listing
+fly -t ci workers
+```
+
+```bash With extra detail (garden address, baggageclaim URL, resource types)
+fly -t ci workers --details
+```
+
+```bash JSON output
+fly -t ci workers --json
+```
+
+</CodeGroup>
+
+The output groups workers into three sections when connected to a TTY: healthy/running workers, outdated workers that need an upgrade, and stalled workers that have stopped checking in. The stalled section includes the exact `prune-worker` command to run for cleanup.
+
+<Accordion title="Worker state reference">
+| State | Meaning |
+|-------|---------|
+| `running` | Active and accepting new containers |
+| `landing` | Draining — finishing current builds, not accepting new work |
+| `landed` | Fully drained, ready to be stopped or restarted |
+| `retiring` | Permanently retiring — same drain behaviour as landing but won't come back |
+| `stalled` | Lost its connection to the TSA; not accepting work. Requires `prune-worker` to remove |
+
+Workers in the `landed` state can be restarted; they will re-register and return to `running`. Workers in `stalled` state need operator intervention.
+</Accordion>
+
+The `--details` flag adds four extra columns: **garden address**, **baggageclaim URL**, **active tasks**, and **resource types** supported by the worker.
+
+---
+
+## fly land-worker
+
+Gracefully drain a worker so it can be taken offline for maintenance. The worker stops accepting new build containers and waits for all currently-running containers to finish, then transitions to the `landed` state.
+
+```bash
+fly -t ci land-worker -w worker-hostname
+```
+
+<Note>
+After landing, the worker process itself is still running — it has simply stopped accepting new work. To fully take the machine offline, stop the `concourse worker` process after the state transitions to `landed`. The worker will re-register as `running` when the process restarts.
+</Note>
+
+Use `fly workers` to monitor the drain progress:
+
+```bash
+# Watch worker state change from running → landing → landed
+watch fly -t ci workers
+```
+
+---
+
+## fly retire-worker
+
+Permanently retire a worker. Like `land-worker`, this drains currently-running containers first — but the worker is marked for **permanent removal** rather than temporary maintenance. The worker will not be able to re-register under the same name after retiring.
+
+```bash
+fly -t ci retire-worker -w worker-hostname
+```
+
+<Warning>
+Retiring a worker is intended for decommissioning a machine entirely. If you only need to take a worker offline temporarily for updates or maintenance, use `fly land-worker` instead.
+</Warning>
+
+---
+
+## fly prune-worker
+
+Forcibly remove a worker record from the Concourse database. This is a hard removal — it does not wait for builds to drain. Use it when a worker has crashed, lost its TSA connection, or is otherwise unreachable and cannot perform a graceful shutdown.
+
+<CodeGroup>
+
+```bash Prune a specific worker by name
+fly -t ci prune-worker -w worker-hostname
+```
+
+```bash Prune all stalled workers at once
+fly -t ci prune-worker --all-stalled
+```
+
+</CodeGroup>
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--worker` | `-w` | Name of the worker to prune |
+| `--all-stalled` | `-a` | Prune every worker currently in the `stalled` state |
+
+<Warning>
+**Pruning is destructive.** Any volumes or containers that were tracked on the pruned worker are also removed from Concourse's database. Builds that were actively running on the pruned worker will be marked as **errored** and can be re-triggered manually. Pruning a healthy worker mid-build will cause those builds to fail.
+</Warning>
+
+The `--all-stalled` flag is a safe convenience shortcut: it first fetches the current worker list, filters to only `stalled` workers, and prunes each one. If no stalled workers are found, it prints a warning and exits cleanly.
+
+<Tip>
+The `fly workers` output already tells you the exact command to run for each stalled worker. Copy it directly to prune that specific worker without needing to look up the name.
+</Tip>
+
+---
+
+## Worker maintenance workflow
+
+A typical worker maintenance cycle uses these commands in sequence:
+
+<Accordion title="Graceful maintenance drain and restart">
+
+```bash
+# 1. Signal the worker to stop accepting new work
+fly -t ci land-worker -w worker-hostname
+
+# 2. Wait for the worker to finish draining
+#    (poll until state = landed)
+watch fly -t ci workers
+
+# 3. Perform maintenance on the worker machine
+
+# 4. Restart the concourse worker process
+#    The worker re-registers automatically and returns to running
+```
+
+</Accordion>
+
+<Accordion title="Recovering from a crashed worker">
+
+```bash
+# 1. Confirm the worker is stalled
+fly -t ci workers
+
+# 2. Prune the stalled record from the database
+fly -t ci prune-worker -w crashed-worker-hostname
+# or, to clean up all stalled workers at once:
+fly -t ci prune-worker --all-stalled
+
+# 3. Re-provision the worker machine and restart the worker process
+#    It will re-register as a new worker
+```
+
+</Accordion>

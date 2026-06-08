@@ -1,0 +1,191 @@
+---
+title: Teams, RBAC, and authentication configuration in Concourse
+sidebarTitle: Teams & Auth
+description: Set up Concourse teams, assign RBAC roles (owner/member/operator/viewer), and configure local users, GitHub OAuth, or OIDC as authentication providers.
+---
+
+Teams are the primary isolation boundary in Concourse. Every pipeline belongs to a team, credential manager paths are namespaced per team, and workers can be pinned to a single team. The `main` team is created automatically when the database is first initialised and cannot be deleted — members of `main` are the super-administrators who can create, configure, and destroy all other teams. Authentication is handled by Skymarshal (an embedded [Dex](https://dexidp.io/) instance) and supports local users, GitHub, OIDC, LDAP, Bitbucket Cloud, and Cloud Foundry UAA out of the box.
+
+## The `main` team
+
+The `main` team is bootstrapped via flags on the `concourse web` command. Any user listed with `--main-team-local-user` (or the GitHub/OIDC equivalents) is granted `owner` access to `main` on startup, even before a database row for the team configuration exists.
+
+```bash
+# Local users in main
+CONCOURSE_MAIN_TEAM_LOCAL_USER=admin
+
+# GitHub org in main
+CONCOURSE_MAIN_TEAM_GITHUB_ORG=myorg
+
+# Combine both
+CONCOURSE_MAIN_TEAM_LOCAL_USER=admin
+CONCOURSE_MAIN_TEAM_GITHUB_ORG=myorg
+CONCOURSE_MAIN_TEAM_GITHUB_TEAM=myorg:platform
+```
+
+<Note>
+  Members of the `main` team can always see all teams' pipelines and manage team membership. Keep the `main` team membership small and audit it regularly.
+</Note>
+
+## RBAC roles
+
+Concourse uses four built-in roles. They are additive: every permission granted to `viewer` is also available to `pipeline-operator`, `member`, and `owner`.
+
+<CardGroup cols={2}>
+  <Card title="owner" icon="crown">
+    Full control over the team. Can manage team membership (`set-team`, `rename-team`, `destroy-team`), set and destroy pipelines, manage workers, and perform all `member` actions.
+  </Card>
+  <Card title="member" icon="user">
+    Can set and destroy pipelines, create builds, hijack containers, manage artifacts, and order pipelines. Cannot modify team membership.
+  </Card>
+  <Card title="pipeline-operator" icon="play">
+    Can trigger and abort builds, pause and unpause jobs and pipelines, pin and unpin resource versions, and clear caches. Cannot set or delete pipelines.
+  </Card>
+  <Card title="viewer" icon="eye">
+    Read-only access. Can view pipelines, builds, resources, containers, and volumes. Cannot trigger any write operations.
+  </Card>
+</CardGroup>
+
+### Role permission summary
+
+| Action | viewer | pipeline-operator | member | owner |
+|---|:---:|:---:|:---:|:---:|
+| View pipelines & builds | ✓ | ✓ | ✓ | ✓ |
+| Trigger / abort builds | — | ✓ | ✓ | ✓ |
+| Pause / unpause jobs | — | ✓ | ✓ | ✓ |
+| Pin resource versions | — | ✓ | ✓ | ✓ |
+| Set / delete pipelines | — | — | ✓ | ✓ |
+| Hijack containers | — | — | ✓ | ✓ |
+| Manage team members | — | — | — | ✓ |
+| Destroy team | — | — | — | ✓ |
+
+## Configuring authentication providers
+
+Authentication providers are configured on the `web` node at startup. All flags have `CONCOURSE_` environment variable equivalents.
+
+<Tabs>
+  <Tab title="Local users">
+    Local users are the simplest auth method — useful for development, demos, and small teams that don't have an SSO provider.
+
+    ```bash
+    # Add users at web startup (username:password, bcrypt passwords accepted)
+    CONCOURSE_ADD_LOCAL_USER=admin:s3cr3t,viewer:viewpass
+
+    # Grant the 'admin' local user owner access to the main team
+    CONCOURSE_MAIN_TEAM_LOCAL_USER=admin
+    ```
+
+    <Note>
+      Passwords can be bcrypt-hashed. If you supply a plaintext password, Concourse will hash it internally. For bcrypt, use a minimum cost of 10: `htpasswd -nbBC 10 "" password | tr -d ':\n'`
+    </Note>
+  </Tab>
+  <Tab title="GitHub OAuth">
+    GitHub OAuth integration is built on Dex's GitHub connector. You need a [GitHub OAuth App](https://github.com/settings/applications/new) with the callback URL set to `https://<external-url>/sky/issuer/callback`.
+
+    ```bash
+    CONCOURSE_GITHUB_CLIENT_ID=your-github-client-id
+    CONCOURSE_GITHUB_CLIENT_SECRET=your-github-client-secret
+
+    # Optional: restrict to a GitHub Enterprise host
+    # CONCOURSE_GITHUB_HOST=github.mycompany.com
+
+    # Grant all members of the 'myorg' org owner access to main
+    CONCOURSE_MAIN_TEAM_GITHUB_ORG=myorg
+
+    # Or a specific team within the org
+    CONCOURSE_MAIN_TEAM_GITHUB_TEAM=myorg:platform
+    ```
+
+    <Tip>
+      You can allow both individual GitHub users and entire orgs/teams in the same team config. Pass multiple `--main-team-github-user` flags or use `fly set-team` for fine-grained role mapping.
+    </Tip>
+  </Tab>
+  <Tab title="OIDC">
+    Use the generic OIDC connector for any OpenID Connect provider (Okta, Azure AD, Keycloak, Google, etc.). The provider must expose a `.well-known/openid-configuration` discovery endpoint.
+
+    ```bash
+    CONCOURSE_OIDC_DISPLAY_NAME=MySSO
+    CONCOURSE_OIDC_ISSUER=https://sso.example.com
+    CONCOURSE_OIDC_CLIENT_ID=concourse
+    CONCOURSE_OIDC_CLIENT_SECRET=my-oidc-secret
+
+    # Optional: request extra scopes beyond openid/profile/email
+    # CONCOURSE_OIDC_SCOPE=groups
+
+    # Map a groups claim to team membership
+    # CONCOURSE_OIDC_GROUPS_KEY=groups
+
+    # Skip email_verified validation (some providers don't set it)
+    # CONCOURSE_OIDC_SKIP_EMAIL_VERIFIED_VALIDATION=true
+    ```
+
+    Grant main team access to an OIDC group:
+    ```bash
+    CONCOURSE_MAIN_TEAM_OIDC_GROUP=platform-engineers
+    ```
+  </Tab>
+</Tabs>
+
+## Managing teams with fly
+
+### Creating and updating teams
+
+```bash
+# Create or update a team with local user auth
+fly -t ci set-team -n myteam \
+  --local-user alice
+
+# Multiple auth sources
+fly -t ci set-team -n myteam \
+  --local-user alice \
+  --github-org myorg \
+  --github-team myorg:platform
+```
+
+### Assigning roles to specific users or groups
+
+The `set-team` command supports per-role assignment using the `--<provider>-<type>:<role>` convention:
+
+```bash
+fly -t ci set-team -n myteam \
+  --local-user alice \
+  --github-user bob:member \
+  --github-team myorg:devops:owner \
+  --github-user charlie:viewer
+```
+
+This gives:
+- `alice` — default `member` role (local user)
+- `bob` — `member` role via GitHub
+- Everyone in `myorg:devops` — `owner` role
+- `charlie` — `viewer` role only
+
+### Other team management commands
+
+```bash
+# List all teams
+fly -t ci teams
+
+# Inspect a team's current auth configuration
+fly -t ci get-team -n myteam
+
+# Rename a team (owner-only)
+fly -t ci rename-team -o oldname -n newname
+
+# Permanently delete a team and all its pipelines
+fly -t ci destroy-team -n myteam
+```
+
+<Warning>
+  `destroy-team` is irreversible. All pipelines, build history, and saved resources belonging to the team are permanently deleted. Only members of the `main` team can destroy other teams.
+</Warning>
+
+## Token expiry
+
+Auth tokens are valid for 24 hours by default. Adjust this with:
+
+```bash
+CONCOURSE_AUTH_DURATION=48h   # e.g. for long-running fly sessions
+```
+
+Users will need to run `fly login` again after their token expires.

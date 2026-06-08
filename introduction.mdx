@@ -1,0 +1,102 @@
+---
+title: "Concourse CI: the container-based automation system"
+sidebarTitle: "Introduction"
+description: "Concourse is an open-source CI/CD system written in Go. Every build runs in a container, every pipeline is declarative YAML, and every worker is stateless."
+---
+
+Concourse is an open-source automation system written in Go, designed from the ground up to make CI/CD pipelines reproducible, portable, and easy to reason about. Every task runs inside an ephemeral container, every pipeline is expressed as a self-contained declarative YAML file, and there is no hidden mutable state that builds can accumulate over time. Whether you are automating a single microservice or coordinating a sprawling multi-team release process, Concourse scales to the problem without changing how you think about it.
+
+## Design principles
+
+Concourse is deliberately opinionated about five core principles that shape everything from the data model to the API design.
+
+<CardGroup cols={2}>
+  <Card title="Idempotency" icon="arrow-rotate-left">
+    Running the same pipeline configuration twice produces the same result. There are no "rebuild" quirks — each build is a fresh, isolated execution.
+  </Card>
+  <Card title="Immutability" icon="lock">
+    Resource versions are content-addressed and never mutated. Once a version is detected it is tracked permanently, giving you a complete audit trail.
+  </Card>
+  <Card title="Declarative config" icon="file-code">
+    Pipelines live entirely in YAML files under version control. There is no GUI editor and no state stored outside of the pipeline definition and its resource versions.
+  </Card>
+  <Card title="Stateless workers" icon="server">
+    Workers hold no durable state. Any worker can be replaced or scaled horizontally at any time without affecting running or queued builds.
+  </Card>
+  <Card title="Reproducible builds" icon="rotate">
+    Tasks declare their container image explicitly. The same image, inputs, and script always produce the same output — no surprise dependency drift.
+  </Card>
+  <Card title="Everything as code" icon="code">
+    Pipelines, resource definitions, task configs, and credential sources are all text files that live alongside your application code in version control.
+  </Card>
+</CardGroup>
+
+## Architecture overview
+
+A Concourse cluster is made up of a small number of collaborating processes.
+
+**ATC (Air Traffic Controller)** is the Concourse web process. It serves the REST API (rooted at `/api/v1/`), renders the web UI, schedules builds, and manages all persistent state in a PostgreSQL database. The `concourse web` subcommand starts the ATC.
+
+**TSA (Token Security Authority)** is the SSH gateway embedded inside the `web` process. Workers connect to the TSA on port `2222` using an SSH reverse tunnel to register themselves with the ATC. This means workers never need an inbound network path — they reach out to the TSA and the ATC communicates back over the established tunnel.
+
+**Workers** are machines running the `concourse worker` process alongside a container runtime (containerd by default). Workers execute tasks in isolated containers, stream build logs back to the ATC over the tunnel, and report their current capacity via periodic heartbeats. Workers are entirely stateless — volumes are managed by a co-located `baggageclaim` process that lives only for the duration of a build.
+
+**PostgreSQL** is the single source of truth for all cluster state: build history, resource versions, pipeline configurations, team membership, and credentials metadata. The ATC owns the schema and runs migrations with `concourse migrate`.
+
+**fly** is the companion CLI. It is the primary way operators and developers interact with Concourse — setting pipelines, triggering jobs, watching build logs in real time, and hijacking running containers for debugging.
+
+```
+┌─────────────────────────────────────┐
+│           Concourse Cluster         │
+│                                     │
+│  ┌──────────┐      ┌─────────────┐  │
+│  │   ATC    │◄────►│  PostgreSQL │  │
+│  │  (web)   │      └─────────────┘  │
+│  │          │                       │
+│  │   TSA    │◄── SSH tunnel ──┐     │
+│  └──────────┘                 │     │
+│                         ┌─────┴───┐ │
+│                         │ Worker  │ │
+│                         │(tasks / │ │
+│                         │volumes) │ │
+│                         └─────────┘ │
+└─────────────────────────────────────┘
+          ▲
+          │ fly CLI / browser
+```
+
+## Key concepts at a glance
+
+| Concept | One-line description |
+|---|---|
+| **Pipeline** | A YAML document declaring resources, jobs, and their relationships |
+| **Resource** | A versioned external artifact (Git repo, S3 bucket, Docker image, …) |
+| **Job** | A sequence of steps that runs on a worker in a fresh container |
+| **Task** | The atomic unit of work — a script executed inside a named container image |
+| **Build** | A single numbered execution of a job, with a log stream and pass/fail status |
+| **Team** | An isolation boundary with its own pipelines, RBAC roles, and secrets scope |
+
+## Explore the documentation
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Spin up a local Concourse cluster with Docker Compose and run your first pipeline in under five minutes.
+  </Card>
+  <Card title="Core Concepts" icon="book-open" href="/core-concepts">
+    Deep-dive into pipelines, resources, jobs, tasks, builds, workers, and teams.
+  </Card>
+  <Card title="Pipelines" icon="diagram-project" href="/pipelines/overview">
+    Learn the full pipeline schema — groups, var sources, display config, and more.
+  </Card>
+  <Card title="fly CLI" icon="terminal" href="/fly/overview">
+    Complete reference for the fly command-line tool, from login to container hijacking.
+  </Card>
+</CardGroup>
+
+## Community and license
+
+Concourse is released under the [Apache 2.0 License](https://github.com/concourse/concourse/blob/master/LICENSE). The project is developed in the open on [GitHub](https://github.com/concourse/concourse), where you can report issues, browse the RFC process, and submit pull requests.
+
+<Note>
+  Join the community on [Discord](https://discord.gg/MeRxXKW) for real-time discussion, or visit the [GitHub Discussions](https://github.com/concourse/concourse/discussions) board for longer-form questions and announcements. The project board tracks what the team is actively working on.
+</Note>

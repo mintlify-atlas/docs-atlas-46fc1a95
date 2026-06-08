@@ -1,0 +1,293 @@
+---
+title: "fly resource commands: check, pin, version management"
+sidebarTitle: "Resource Commands"
+description: "Manage Concourse pipeline resources with fly: list resources, trigger checks, pin versions, enable or disable versions, and clear caches."
+---
+
+Resources are the building blocks of Concourse pipelines — they represent external artifacts like Git repositories, Docker images, or S3 buckets. The `fly` CLI provides a full suite of commands to inspect resource state, trigger immediate checks, control which versions are visible to jobs, and clear stale cached volumes. Understanding these commands is essential for debugging pipelines and managing deployments safely.
+
+## fly resources
+
+List every resource in a pipeline, showing its type, pinned version (if any), and the status of the most recent check.
+
+```bash
+fly -t ci resources -p my-pipeline
+```
+
+Add `--team` if the pipeline belongs to a team other than your target's default:
+
+```bash
+fly -t ci resources -p my-pipeline --team platform-team
+```
+
+The table output includes columns for **name**, **type**, **pinned**, and **check status**. Use `--json` to get machine-readable output.
+
+---
+
+## fly check-resource
+
+Trigger an immediate version check for a resource without waiting for the normal scheduler interval. By default the command streams check output and exits with the check's result code.
+
+<CodeGroup>
+
+```bash Basic check
+fly -t ci check-resource -r my-pipeline/my-resource
+```
+
+```bash Check from a specific version
+fly -t ci check-resource -r my-pipeline/my-resource \
+  --from ref:abc123def456
+```
+
+```bash Return immediately (async)
+fly -t ci check-resource -r my-pipeline/my-resource \
+  --async
+```
+
+```bash Check the resource itself only (no recurse)
+fly -t ci check-resource -r my-pipeline/my-resource \
+  --shallow
+```
+
+</CodeGroup>
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--resource` | `-r` | `PIPELINE/RESOURCE` — required |
+| `--from` | `-f` | Start checking from this version, e.g. `ref:abcd` or `path:thing-1.2.3.tgz` |
+| `--async` | `-a` | Return without waiting for the check result |
+| `--shallow` | | Check only the resource itself, not any resource types it depends on |
+| `--team` | | Pipeline's team if different from the target default |
+
+<Note>
+Check builds stream their log output to your terminal. A non-zero exit code means the check itself failed, not just that no new versions were found.
+</Note>
+
+---
+
+## fly check-resource-type
+
+Trigger a check for the container image of a **custom resource type** defined in a pipeline. This is the equivalent of `check-resource` but for `resource_types` entries rather than `resources`.
+
+```bash
+fly -t ci check-resource-type -r my-pipeline/custom-type
+```
+
+The flags are identical to `check-resource`: `--from`, `--async`, `--shallow`, and `--team`.
+
+<Tip>
+Run this after updating a `resource_types` entry in your pipeline to force workers to pull the new image without waiting for the next scheduled check cycle.
+</Tip>
+
+---
+
+## fly resource-versions
+
+List the known versions of a resource. Results are returned most-recent-first and default to the last 50 versions.
+
+```bash
+fly -t ci resource-versions -r my-pipeline/my-resource
+```
+
+Limit or expand the result count with `--count`:
+
+```bash
+fly -t ci resource-versions -r my-pipeline/my-resource --count 100
+```
+
+The table shows each version's **id**, **version fields** (e.g. `ref:abc123`), and whether it is **enabled**. Use `--json` to get the full version metadata.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--resource` | `-r` | `PIPELINE/RESOURCE` — required |
+| `--count` | `-c` | Number of versions to return (default: `50`) |
+| `--json` | | Output as JSON |
+| `--team` | | Pipeline's team if different from the target default |
+
+---
+
+## fly pin-resource
+
+Pin a resource to a specific version so that every `get` step retrieving that resource uses exactly the pinned version, regardless of newer versions being discovered.
+
+<CodeGroup>
+
+```bash Pin by version fields
+fly -t ci pin-resource \
+  -r my-pipeline/my-resource \
+  -v ref:abc123def456
+```
+
+```bash Pin with a comment
+fly -t ci pin-resource \
+  -r my-pipeline/my-resource \
+  -v ref:abc123def456 \
+  --comment "pinned for hotfix release"
+```
+
+```bash Update pin comment only (resource already pinned)
+fly -t ci pin-resource \
+  -r my-pipeline/my-resource \
+  --comment "updated: deploying v2.3.1"
+```
+
+</CodeGroup>
+
+The `--version` flag accepts partial key-value pairs. If multiple versions match, the **latest** matching version is pinned. A `--comment` can be set independently after pinning; the resource must already be pinned if you omit `--version`.
+
+<Warning>
+Pinning a resource affects **all jobs** in the pipeline that use a `get` step for that resource. Ensure the pinned version is accessible to workers before applying to production pipelines.
+</Warning>
+
+---
+
+## fly unpin-resource
+
+Remove the pin from a resource, allowing jobs to resume consuming the latest discovered version.
+
+```bash
+fly -t ci unpin-resource -r my-pipeline/my-resource
+```
+
+---
+
+## fly enable-resource-version / fly disable-resource-version
+
+Control whether a specific version of a resource is visible to jobs. Disabling a version prevents any job from fetching it via a `get` step. Re-enable it later without losing its history.
+
+<CodeGroup>
+
+```bash Enable a version
+fly -t ci enable-resource-version \
+  -r my-pipeline/my-resource \
+  -v ref:abc123def456
+```
+
+```bash Disable a version
+fly -t ci disable-resource-version \
+  -r my-pipeline/my-resource \
+  -v ref:abc123def456
+```
+
+</CodeGroup>
+
+Both commands accept partial version fields; when multiple versions match, the **latest** is targeted.
+
+<Note>
+Disabled versions still appear in `fly resource-versions` output (marked `enabled: no`) and can be re-enabled at any time. This is different from `fly clear-versions`, which permanently removes version history.
+</Note>
+
+---
+
+## fly clear-resource-cache
+
+Delete cached volumes for a resource, forcing workers to perform a fresh `get` on the next build. You can clear all caches for a resource or target a specific version.
+
+<CodeGroup>
+
+```bash Clear all caches for a resource
+fly -t ci clear-resource-cache -r my-pipeline/my-resource
+```
+
+```bash Clear the cache for a specific version
+fly -t ci clear-resource-cache \
+  -r my-pipeline/my-resource \
+  -v digest:sha256@abc123
+```
+
+</CodeGroup>
+
+The command prompts for confirmation before deleting. It prints the number of cache volumes removed on success.
+
+<Warning>
+Clearing caches causes the next build to re-download or re-clone the resource from its source, which may significantly increase build time for large resources.
+</Warning>
+
+---
+
+## fly clear-versions
+
+Remove **all version history** for a resource or resource type. The next check will re-discover versions from scratch. This can cascade to shared resources across multiple pipelines.
+
+<CodeGroup>
+
+```bash Clear versions for a resource
+fly -t ci clear-versions \
+  --resource my-pipeline/my-resource
+```
+
+```bash Clear versions for a custom resource type
+fly -t ci clear-versions \
+  --resource-type my-pipeline/custom-type
+```
+
+```bash Skip confirmation prompt
+fly -t ci clear-versions \
+  --resource my-pipeline/my-resource \
+  --non-interactive
+```
+
+</CodeGroup>
+
+Before deleting, the command lists every resource and resource type that shares the version history (across pipelines), then asks for confirmation.
+
+<Warning>
+This operation is **irreversible**. Version history, including any per-version metadata used for build causality, is permanently deleted. All jobs that previously ran against those versions will not be re-triggered automatically — but the next check will re-discover current versions.
+</Warning>
+
+---
+
+## fly volumes
+
+List all volumes currently tracked by Concourse across all workers. Each volume shows its worker, type, identifier, and size.
+
+<CodeGroup>
+
+```bash List all volumes
+fly -t ci volumes
+```
+
+```bash Detailed output (includes path and TTL)
+fly -t ci volumes --details
+```
+
+```bash JSON output
+fly -t ci volumes --json
+```
+
+</CodeGroup>
+
+<Tip>
+Volumes accumulate over time, especially for resources with many versions. Use this command to audit disk usage across workers before performing maintenance.
+</Tip>
+
+---
+
+## fly containers
+
+List all containers currently running or cached on Concourse workers, along with their associated build, check, or resource type.
+
+<CodeGroup>
+
+```bash List all containers
+fly -t ci containers
+```
+
+```bash JSON output
+fly -t ci containers --json
+```
+
+</CodeGroup>
+
+The table shows the worker, pipeline, job, build number, step, and container type for each entry. The `--team` flag filters to containers belonging to a specific team.
+
+<Accordion title="Understanding container types">
+Concourse creates different kinds of containers depending on what work is being done:
+
+- **check** — created for resource version checks
+- **get** — created for `get` step execution
+- **put** — created for `put` step execution  
+- **task** — created for `task` step execution
+
+Containers are garbage-collected automatically after their associated build completes and a grace period elapses.
+</Accordion>

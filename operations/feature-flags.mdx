@@ -1,0 +1,110 @@
+---
+title: Concourse feature flags and experimental configuration
+sidebarTitle: Feature Flags
+description: "Toggle Concourse feature flags on the web node: global resource caches, auto-rerun builds, streamed volume caching, causality UI, and secret redaction."
+---
+
+Feature flags in Concourse control opt-in behaviours that are either experimental, have non-trivial performance implications, or change how the system handles failure scenarios. They are set on the `web` node at startup via environment variables and apply cluster-wide — there is no per-pipeline or per-team granularity. All flags are exposed as boolean environment variables on the `concourse web` process. Changing a feature flag requires a restart of the web node.
+
+## Available feature flags
+
+The flags below come directly from `atc/feature_flags.go` and are the complete set of feature toggles in the current release.
+
+### `CONCOURSE_ENABLE_GLOBAL_RESOURCES`
+
+**Go variable:** `EnableGlobalResources` · **Feature key:** `global_resources`
+
+Share resource version check caches across pipelines in the same team. When two pipelines use the same resource type and source configuration, Concourse will deduplicate the background checking work, reducing load on external systems (e.g. a shared Docker registry or Git remote) and improving check latency across the board.
+
+```yaml
+# docker-compose.yml / web environment
+CONCOURSE_ENABLE_GLOBAL_RESOURCES: "true"
+```
+
+<Note>
+  Global resources is most impactful in organisations with many pipelines that share common base images or library repositories. With it disabled (the default), every pipeline checks its resources independently.
+</Note>
+
+### `CONCOURSE_ENABLE_BUILD_RERUN_WHEN_WORKER_DISAPPEARS`
+
+**Go variable:** `EnableBuildRerunWhenWorkerDisappears` · **Feature key:** `build_rerun`
+
+Automatically reschedule a build if the worker it was running on disappears unexpectedly — for example, due to a spot/preemptible instance being reclaimed by the cloud provider, a kernel panic, or a network partition. Without this flag, such builds are left in an `errored` state and must be manually re-triggered.
+
+```yaml
+CONCOURSE_ENABLE_BUILD_RERUN_WHEN_WORKER_DISAPPEARS: "true"
+```
+
+<Warning>
+  Enable this flag only if your tasks are **idempotent**. A build that was partially complete before the worker disappeared will be started again from the beginning. Non-idempotent tasks (e.g. database migrations, artifact uploads) may cause unintended side-effects if rerun.
+</Warning>
+
+### `CONCOURSE_ENABLE_CACHE_STREAMED_VOLUMES`
+
+**Go variable:** `EnableCacheStreamedVolumes` · **Feature key:** `cache_streamed_volumes`
+
+When a task or resource image needs to be fetched from another worker (volume streaming), cache the streamed volume locally on the receiving worker. Subsequent builds on the same worker can then reuse the local copy instead of streaming again, reducing inter-worker bandwidth and build startup latency.
+
+```yaml
+CONCOURSE_ENABLE_CACHE_STREAMED_VOLUMES: "true"
+```
+
+### `CONCOURSE_ENABLE_RESOURCE_CAUSALITY`
+
+**Go variable:** `EnableResourceCausality` · **Feature key:** `resource_causality`
+
+Track and display causality chains in the Concourse web UI — specifically, the upstream resource versions that triggered a build and the downstream versions that a build produced. This makes it possible to trace a deployment artifact back through every build step and source commit that produced it.
+
+```yaml
+CONCOURSE_ENABLE_RESOURCE_CAUSALITY: "true"
+```
+
+## Security toggle: disabling secret redaction
+
+By default, Concourse automatically redacts secret values (fetched from credential managers or `--add-local-user` entries) from build logs. The following toggle disables that behaviour:
+
+```bash
+CONCOURSE_DISABLE_REDACT_SECRETS=true
+```
+
+<Warning>
+  **Do not enable this in production.** Disabling secret redaction means that any secret value that leaks into a task's stdout or stderr will be visible to all users who can view that build — including `viewer`-role users. It exists solely to aid debugging in isolated, non-production environments.
+</Warning>
+
+## Docker Compose example
+
+The reference `docker-compose.yml` enables two feature flags on the web service:
+
+```yaml
+web:
+  environment:
+    CONCOURSE_ENABLE_CACHE_STREAMED_VOLUMES: "true"
+    CONCOURSE_ENABLE_RESOURCE_CAUSALITY: "true"
+```
+
+This is a safe default for development clusters that serves as a good starting point for evaluating both flags before enabling them in production.
+
+## Feature flag reference table
+
+| Environment variable | Feature key | Default | Description |
+|---|---|:---:|---|
+| `CONCOURSE_ENABLE_GLOBAL_RESOURCES` | `global_resources` | `false` | Share resource check caches across pipelines |
+| `CONCOURSE_ENABLE_BUILD_RERUN_WHEN_WORKER_DISAPPEARS` | `build_rerun` | `false` | Auto-rerun builds whose worker disappears |
+| `CONCOURSE_ENABLE_CACHE_STREAMED_VOLUMES` | `cache_streamed_volumes` | `false` | Cache volumes streamed from other workers |
+| `CONCOURSE_ENABLE_RESOURCE_CAUSALITY` | `resource_causality` | `false` | Show causality chains in the UI |
+| `CONCOURSE_DISABLE_REDACT_SECRETS` | *(security toggle)* | `false` | Disable automatic secret redaction in logs |
+
+<Tip>
+  The feature key names (e.g. `global_resources`) are the identifiers used by the Concourse Elm frontend — they appear in the `FeatureFlags` type in `web/elm/src/Concourse.elm` and are passed to the UI via the `/api/v1/info` endpoint.
+</Tip>
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Deployment" icon="rocket" href="/operations/deployment">
+    Set feature flags as environment variables when starting the web node, using Docker Compose, Helm, or a bare binary.
+  </Card>
+  <Card title="Workers" icon="server" href="/operations/workers">
+    Understand worker lifecycle and container runtimes that interact with features like cached volume streaming.
+  </Card>
+</CardGroup>

@@ -1,0 +1,388 @@
+---
+title: "Step modifiers: timeout, retry, hooks, and parallel execution"
+sidebarTitle: "Step Modifiers"
+description: "Wrap any Concourse step with timeout, attempts, lifecycle hooks, try, do, in_parallel, and across modifiers to control execution flow and error handling."
+---
+
+Step modifiers are keys you add to an existing step — or wrapper steps in their own right — to change how and when the step runs. They can be composed: you can set a `timeout` and an `on_failure` hook on the same `task` step, or nest `do` blocks inside `ensure` hooks. Understanding the available modifiers lets you build resilient pipelines that clean up after themselves, retry transient failures, run independent work concurrently, and gate on every combination of variable values.
+
+---
+
+## `timeout`
+
+The `timeout` modifier aborts the wrapped step if it does not complete within the specified duration. The step is marked as failed and any configured hooks (`on_failure`, `ensure`, etc.) are still executed.
+
+<ParamField path="timeout" type="string">
+  A Go duration string specifying the maximum allowed run time. Examples:
+  `30m`, `1h`, `1h30m`, `90s`. Note that fetching the resource type's image
+  does **not** count against this timeout.
+</ParamField>
+
+```yaml
+- task: slow-integration-test
+  timeout: 1h30m
+  file: repo/ci/integration.yml
+```
+
+<Note>
+  The `timeout` value can be a `((var))` placeholder, so you can parameterize
+  it from a credential manager or `var_files` without changing the pipeline
+  YAML.
+</Note>
+
+---
+
+## `attempts`
+
+The `attempts` modifier retries the wrapped step up to the given number of
+times. Concourse stops retrying as soon as an attempt exits successfully. If
+all attempts fail, the step — and therefore the build — is marked as failed.
+
+<ParamField path="attempts" type="integer">
+  Total number of attempts, including the first. A value of `3` means one
+  initial attempt plus two retries.
+</ParamField>
+
+```yaml
+- task: flaky-network-test
+  attempts: 3
+  file: repo/ci/network-test.yml
+```
+
+<Tip>
+  Combine `attempts` with `timeout` to bound both the per-attempt duration and
+  the total number of tries, preventing a single flaky step from blocking the
+  build indefinitely.
+</Tip>
+
+```yaml
+- task: flaky-test
+  timeout: 10m
+  attempts: 5
+  file: repo/ci/test.yml
+```
+
+---
+
+## Lifecycle hooks
+
+Hook modifiers attach additional steps that run after the wrapped step
+completes, depending on the outcome. Each hook takes a single step (which can
+itself be a `do` block containing multiple steps).
+
+<ParamField path="on_success" type="Step">
+  Run the hook step only if the wrapped step **succeeded** (exited `0`).
+</ParamField>
+
+<ParamField path="on_failure" type="Step">
+  Run the hook step only if the wrapped step **failed** (exited non-zero).
+</ParamField>
+
+<ParamField path="on_error" type="Step">
+  Run the hook step only if the wrapped step **errored** — meaning Concourse
+  itself encountered a problem (e.g. worker lost, image pull failed). This is
+  distinct from the step's script exiting with a non-zero code.
+</ParamField>
+
+<ParamField path="on_abort" type="Step">
+  Run the hook step only if the build was **manually aborted** by a user via
+  `fly abort-build` or the UI.
+</ParamField>
+
+<ParamField path="ensure" type="Step">
+  Run the hook step **always**, regardless of the wrapped step's outcome —
+  success, failure, error, or abort. Use for cleanup that must always happen.
+</ParamField>
+
+### Hook examples
+
+<CodeGroup>
+
+```yaml Notify on failure
+- task: run-tests
+  file: repo/ci/test.yml
+  on_failure:
+    put: slack-alert
+    params:
+      text: "Tests failed on branch ((branch)) :x:"
+```
+
+```yaml Always clean up
+- task: provision-infra
+  file: repo/ci/provision.yml
+  ensure:
+    task: destroy-infra
+    file: repo/ci/destroy.yml
+```
+
+```yaml Multiple hooks on one step
+- task: deploy
+  file: repo/ci/deploy.yml
+  on_success:
+    put: slack-alert
+    params:
+      text: "Deployment succeeded :white_check_mark:"
+  on_failure:
+    put: slack-alert
+    params:
+      text: "Deployment failed :x:"
+  ensure:
+    task: cleanup-temp-files
+    file: repo/ci/cleanup.yml
+```
+
+```yaml Multi-step hook using do
+- task: run-tests
+  file: repo/ci/test.yml
+  on_failure:
+    do:
+      - task: collect-logs
+        file: repo/ci/collect-logs.yml
+      - put: slack-alert
+        params:
+          text: "Tests failed — logs collected."
+```
+
+</CodeGroup>
+
+<Note>
+  Hooks themselves can have hooks. An `ensure` hook on a failing task will run
+  even if an `on_failure` hook also failed. This lets you layer "last resort"
+  cleanup logic.
+</Note>
+
+---
+
+## `try`
+
+The `try` step wraps a single step and **ignores any failure**. The build
+continues regardless of whether the wrapped step succeeded or failed. This is
+useful for optional steps — for example, fetching a resource that may not
+exist yet, or sending a notification to a service that might be unavailable.
+
+```yaml
+- try:
+    get: optional-cache
+    params:
+      skip_download: true
+```
+
+```yaml
+- try:
+    task: notify-external-system
+    file: repo/ci/notify.yml
+```
+
+<Warning>
+  Use `try` sparingly. Silently ignoring failures can mask real problems.
+  Prefer `on_failure` hooks that send a notification rather than swallowing
+  the failure entirely.
+</Warning>
+
+---
+
+## `do`
+
+The `do` step runs a **sequence of steps** in order. It is mainly useful for
+grouping steps as the argument to a hook modifier, where the hook field
+accepts only a single step.
+
+```yaml
+- do:
+    - get: repo
+    - task: test
+      file: repo/ci/test.yml
+    - put: results
+      params:
+        file: test-results/output.xml
+```
+
+```yaml
+# Useful inside a hook to run multiple steps
+- task: build
+  file: repo/ci/build.yml
+  on_failure:
+    do:
+      - task: capture-diagnostics
+        file: repo/ci/diagnostics.yml
+      - put: pagerduty
+        params:
+          summary: "Build failed — diagnostics attached"
+```
+
+---
+
+## `in_parallel`
+
+The `in_parallel` step runs multiple steps **concurrently**, collecting their
+results when all have finished. By default, if any step fails the remaining
+steps are allowed to finish before the `in_parallel` step itself is marked as
+failed.
+
+<ParamField path="steps" type="Step[]">
+  The list of steps to run concurrently. Each step is a standard pipeline
+  step — `get`, `put`, `task`, or any other step type.
+</ParamField>
+
+<ParamField path="limit" type="integer">
+  Maximum number of steps to run at the same time. Steps beyond this limit
+  are queued and started as running steps finish. Defaults to no limit (all
+  steps start immediately).
+</ParamField>
+
+<ParamField path="fail_fast" type="boolean">
+  When `true`, abort all remaining steps as soon as any single step fails.
+  Defaults to `false` — all steps run to completion even if one fails early.
+</ParamField>
+
+### Examples
+
+<CodeGroup>
+
+```yaml Parallel resource fetches
+- in_parallel:
+    steps:
+      - get: repo
+        trigger: true
+      - get: base-image
+      - get: test-dependencies
+```
+
+```yaml Shorthand (list directly)
+- in_parallel:
+    - get: resource-a
+    - get: resource-b
+    - get: resource-c
+```
+
+```yaml With limit and fail_fast
+- in_parallel:
+    steps:
+      - task: test-unit
+        file: repo/ci/test-unit.yml
+      - task: test-integration
+        file: repo/ci/test-integration.yml
+      - task: test-e2e
+        file: repo/ci/test-e2e.yml
+    limit: 2
+    fail_fast: true
+```
+
+</CodeGroup>
+
+<Note>
+  All steps in `in_parallel` share the same set of input artifacts from
+  preceding steps. Outputs produced by steps inside `in_parallel` are all
+  merged together and available to steps that follow the `in_parallel` block.
+</Note>
+
+<Warning>
+  If two parallel steps write to the same output directory, the behavior is
+  undefined — the last write wins. Ensure that concurrent steps produce
+  outputs with distinct names.
+</Warning>
+
+---
+
+## `across`
+
+The `across` modifier iterates a step over one or more sets of variable
+values, creating a separate sub-step execution for each combination. It is
+similar to a matrix build in other CI systems. The `across` key is placed
+alongside the step being iterated — it does not wrap the step in an outer
+block.
+
+<ParamField path="across" type="AcrossVarConfig[]">
+  A list of variable definitions to iterate over. Each entry has:
+
+  - `var` (required) — the variable name, accessible as `((.:var-name))`
+    inside the step.
+  - `values` (required) — a list of values to iterate over.
+  - `max_in_flight` (optional) — controls parallelism for this variable's
+    values. Accepts an integer (max concurrent sub-steps) or the string `"all"`
+    (run all values concurrently).
+</ParamField>
+
+<ParamField path="fail_fast" type="boolean">
+  When `true`, abort remaining sub-steps as soon as any single sub-step fails.
+  Defaults to `false`.
+</ParamField>
+
+### Examples
+
+<CodeGroup>
+
+```yaml Deploy to multiple environments
+- across:
+    - var: environment
+      values: [dev, staging, production]
+      max_in_flight: 1        # run sequentially
+  task: deploy
+  file: repo/ci/deploy.yml
+  params:
+    ENVIRONMENT: ((.:environment))
+```
+
+```yaml Matrix: environment × region
+- across:
+    - var: environment
+      values: [staging, production]
+    - var: region
+      values: [us-east-1, eu-west-1]
+      max_in_flight: all      # all regions in parallel per environment
+  task: deploy
+  file: repo/ci/deploy.yml
+  params:
+    ENVIRONMENT: ((.:environment))
+    REGION: ((.:region))
+  fail_fast: true
+```
+
+</CodeGroup>
+
+<Note>
+  `across` iterates over the **Cartesian product** of all listed variable
+  values. Two variables with three values each produce nine sub-step
+  executions. Use `max_in_flight` to control how many run concurrently.
+</Note>
+
+---
+
+## Composing modifiers
+
+All modifiers can be combined on a single step. When multiple modifiers apply,
+they are evaluated in a defined order: hooks wrap the step including any
+`timeout` and `attempts` logic.
+
+```yaml
+- task: critical-deploy
+  file: repo/ci/deploy.yml
+  timeout: 30m
+  attempts: 2
+  on_success:
+    put: slack
+    params:
+      text: "Deploy succeeded :rocket:"
+  on_failure:
+    put: slack
+    params:
+      text: "Deploy failed after 2 attempts :fire:"
+  ensure:
+    task: record-result
+    file: repo/ci/record-result.yml
+```
+
+<Accordion title="Modifier evaluation order">
+  When a step has multiple modifiers, they compose from innermost to
+  outermost in this order:
+
+  1. The core step itself (e.g. `task`, `get`, `put`)
+  2. `timeout` — wraps the step; aborts after duration
+  3. `attempts` — wraps timeout+step; retries on failure
+  4. `on_success` / `on_failure` / `on_error` / `on_abort` — hook on the
+     attempts result
+  5. `ensure` — outermost; always runs last
+
+  This means `ensure` runs even if the step hit its timeout, exhausted all
+  attempts, and the `on_failure` hook also failed.
+</Accordion>

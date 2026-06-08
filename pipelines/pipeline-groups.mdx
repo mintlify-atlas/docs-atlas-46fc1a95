@@ -1,0 +1,220 @@
+---
+title: "Organizing pipelines with groups and display options"
+sidebarTitle: "Pipeline Groups"
+description: "How to use GroupConfig to visually organise jobs and resources into tabs, plus display background images and CSS filters for the pipeline canvas."
+---
+
+As pipelines grow, their job graphs can become difficult to read at a glance. Concourse addresses this with **groups** — named tabs in the pipeline web UI that show a filtered subset of jobs and resources — and a **display** block for visual customisation of the canvas background. Neither feature affects scheduling or execution; they exist purely to improve the experience of working with large pipelines.
+
+## `GroupConfig` fields
+
+Each entry in the `groups` list maps to the `GroupConfig` struct in [`atc/config.go`](https://github.com/concourse/concourse/blob/master/atc/config.go):
+
+```go
+type GroupConfig struct {
+    Name      string   `json:"name"`
+    Jobs      []string `json:"jobs,omitempty"`
+    Resources []string `json:"resources,omitempty"`
+}
+```
+
+<ParamField path="name" type="string" required>
+  The display name of the tab in the pipeline web UI. Must be unique across all
+  groups in the pipeline.
+</ParamField>
+
+<ParamField path="jobs" type="[]string">
+  List of job names to show when this group tab is active. Job names must match
+  entries in the `jobs` list exactly. Glob patterns are **not** supported.
+</ParamField>
+
+<ParamField path="resources" type="[]string">
+  List of resource names to show in the group view alongside the jobs. Resources
+  listed here are highlighted in the pipeline graph when the group tab is
+  selected.
+</ParamField>
+
+## Defining groups
+
+```yaml
+groups:
+  - name: build
+    jobs: [compile, unit-tests, integration-tests, lint]
+
+  - name: deploy
+    jobs: [deploy-staging, smoke-tests, deploy-production]
+    resources: [app-version]
+
+  - name: maintenance
+    jobs: [update-dependencies, rotate-credentials]
+```
+
+The pipeline web UI renders one tab per group at the top of the canvas. Clicking a tab shows only the jobs (and resources) listed for that group, keeping the visible graph small and focused.
+
+<Note>
+  An implicit **all** tab is always present and shows every job and resource in
+  the pipeline, regardless of group membership. You cannot remove or rename it.
+</Note>
+
+## Jobs not assigned to any group
+
+Any job that does not appear in any group's `jobs` list is **hidden from all group tabs** and is only visible in the **all** view. This is useful for utility jobs (e.g. dependency update bots) that clutter the main graph but still need to exist in the pipeline.
+
+<Tip>
+  If you add groups to a pipeline, consider explicitly assigning every job to at
+  least one group. Jobs that fall off all groups can become invisible to
+  operators who never look at the "all" tab.
+</Tip>
+
+## Full groups example
+
+```yaml
+groups:
+  - name: ci
+    jobs:
+      - lint
+      - unit-tests
+      - integration-tests
+    resources:
+      - source-code
+
+  - name: release
+    jobs:
+      - build-release-candidate
+      - publish-release
+    resources:
+      - version
+      - release-bucket
+
+  - name: infra
+    jobs:
+      - terraform-plan
+      - terraform-apply
+    resources:
+      - terraform-state
+```
+
+When the `ci` tab is active, the graph shows only `lint`, `unit-tests`, `integration-tests`, and the `source-code` resource. The `release` and `infra` jobs are hidden until their respective tabs are selected.
+
+## `display` field
+
+The `display` block in a pipeline sets a decorative background on the pipeline canvas in the web UI. It maps to the `DisplayConfig` struct:
+
+```go
+type DisplayConfig struct {
+    BackgroundImage  string `json:"background_image,omitempty"`
+    BackgroundFilter string `json:"background_filter,omitempty"`
+}
+```
+
+<ParamField path="background_image" type="string">
+  An absolute HTTPS URL to an image displayed behind the pipeline graph. The
+  image is scaled to cover the canvas area.
+</ParamField>
+
+<ParamField path="background_filter" type="string">
+  Any valid [CSS `filter`](https://developer.mozilla.org/en-US/docs/Web/CSS/filter)
+  expression applied to the background image. Multiple filter functions can be
+  chained with spaces.
+</ParamField>
+
+### Display configuration example
+
+```yaml
+display:
+  background_image: https://example.com/assets/pipeline-bg.png
+  background_filter: blur(2px) brightness(0.7)
+```
+
+Common `background_filter` values:
+
+| Filter | Effect |
+|---|---|
+| `blur(4px)` | Softens the image so the pipeline graph remains readable |
+| `grayscale(50%)` | Desaturates the image partially or fully |
+| `brightness(0.6)` | Darkens the image for better contrast with light-coloured nodes |
+| `blur(2px) grayscale(30%)` | Combines blur and desaturation |
+
+<Note>
+  Both `background_image` and `background_filter` are validated by Concourse
+  when the pipeline config is applied. `background_image` must be a valid
+  absolute URL; an invalid value causes `fly set-pipeline` to return an error.
+</Note>
+
+## Variable sources (`var_sources`)
+
+Large pipelines often pull credentials from multiple backends — HashiCorp Vault for secrets, AWS SSM for infrastructure config, and a local `vars` file for non-sensitive values. The `var_sources` list gives each backend a name so that pipeline YAML can reference it explicitly.
+
+```yaml
+var_sources:
+  - name: vault
+    type: vault
+    config:
+      url: https://vault.example.com
+      path_prefix: /concourse/main
+      auth_backend: approle
+      auth_params:
+        role_id: ((vault-role-id))
+        secret_id: ((vault-secret-id))
+
+  - name: aws-ssm
+    type: ssm
+    config:
+      region: us-east-1
+```
+
+Once a var source is defined, you can scope a variable reference to it by prefixing the source name with a colon:
+
+```yaml
+source:
+  password: ((vault:my-service-password))
+  region:   ((aws-ssm:deploy-region))
+```
+
+Without a source prefix, Concourse resolves `((var_name))` using the credential manager configured at the system level.
+
+<Tip>
+  Var sources are resolved in declaration order, and Concourse automatically
+  topologically sorts them when one var source's config references another via
+  `((source-name:var))`. Circular dependencies between var sources are a
+  validation error.
+</Tip>
+
+For a full reference on credential management and supported var source types, see the [Credentials](/credentials/overview) documentation.
+
+## Putting it all together
+
+```yaml
+groups:
+  - name: app
+    jobs: [test, build, deploy-staging, deploy-prod]
+    resources: [source-code, app-image]
+  - name: platform
+    jobs: [update-base-image, rotate-certs]
+
+var_sources:
+  - name: vault
+    type: vault
+    config:
+      url: https://vault.example.com
+
+display:
+  background_image: https://example.com/bg.jpg
+  background_filter: blur(3px) brightness(0.55)
+
+resources:
+  - name: source-code
+    type: git
+    source:
+      uri: https://github.com/myorg/myapp
+      branch: main
+      private_key: ((vault:github-deploy-key))
+
+jobs:
+  - name: test
+    plan:
+      - get: source-code
+        trigger: true
+      - task: run-tests
+        file: source-code/ci/tasks/test.yml
+```

@@ -1,0 +1,311 @@
+---
+title: "fly build commands: trigger, watch, hijack, and execute"
+sidebarTitle: "Build Commands"
+description: "Complete reference for fly CLI build commands — list builds, trigger jobs, stream logs, abort, rerun, execute one-off tasks, and hijack running containers."
+---
+
+Concourse exposes a rich set of `fly` commands for interacting with builds at every stage of their lifecycle — from triggering a job and streaming its output in real time, to dropping into the exact container a build ran in to debug a failure. This page covers `builds`, `trigger-job`, `watch`, `abort-build`, `rerun-build`, `execute`, and `hijack`.
+
+## fly builds
+
+`builds` lists recent builds across the whole Concourse instance, a specific pipeline, or a specific job. The default output is a table showing build ID, name, status, start/end times, duration, team, and the user or system that created it.
+
+```bash
+# List the last 50 builds (default) across the instance
+fly -t ci builds
+
+# Show the last 20 builds for a specific job
+fly -t ci builds -j my-pipeline/my-job --count 20
+
+# Show all builds in a pipeline
+fly -t ci builds -p my-pipeline
+
+# Filter by time range
+fly -t ci builds --since "2024-01-01 00:00:00" --until "2024-01-31 23:59:59"
+
+# Show builds across all teams (requires access to each team)
+fly -t ci builds --all-teams
+
+# Output as JSON
+fly -t ci builds -j my-pipeline/my-job --json
+```
+
+<Accordion title="All builds flags">
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--job` | `-j` | Filter to builds for a specific `PIPELINE/JOB`. Mutually exclusive with `--pipeline`. |
+| `--pipeline` | `-p` | Filter to all builds in a specific pipeline. Mutually exclusive with `--job`. |
+| `--count` | `-c` | Maximum number of builds to return (default: `50`). |
+| `--all-teams` | `-a` | Show builds for all teams the user has access to. |
+| `--current-team` | | Restrict to the currently targeted team. |
+| `--team` | `-n` | Show builds for the specified team(s) (repeatable). |
+| `--since` | | Filter to builds that started at or after this time (`yyyy-mm-dd HH:mm:ss`). |
+| `--until` | | Filter to builds that started at or before this time (`yyyy-mm-dd HH:mm:ss`). |
+| `--json` | | Print results as JSON. |
+
+</Accordion>
+
+<Note>
+  `--since` and `--until` use the local system timezone when parsing timestamps. The displayed times in table output are also localised.
+</Note>
+
+---
+
+## fly trigger-job
+
+`trigger-job` creates a new build for a job immediately, bypassing its normal trigger conditions (resource watches, time-based triggers, etc.). Optionally stream the build output immediately with `--watch`.
+
+```bash
+# Trigger a job
+fly -t ci trigger-job -j my-pipeline/my-job
+
+# Trigger and immediately stream the build logs
+fly -t ci trigger-job -j my-pipeline/my-job --watch
+```
+
+<Accordion title="All trigger-job flags">
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--job` | `-j` | **(Required)** Job to trigger, in `PIPELINE/JOB` format. |
+| `--watch` | `-w` | Stream build output after triggering. Detaches cleanly on Ctrl-C — the build continues running. |
+| `--team` | | Target a different team than the default. |
+
+</Accordion>
+
+<Note>
+  If you press Ctrl-C while `--watch` is streaming, fly detaches from the log stream and prints the exact `fly watch` command needed to re-attach. The build itself keeps running.
+</Note>
+
+---
+
+## fly watch
+
+`watch` streams the log output of a running or completed build. It can target the latest build for a job, a specific build number, or a build by its web URL.
+
+```bash
+# Stream the most recent build for a job
+fly -t ci watch -j my-pipeline/my-job
+
+# Stream a specific build number
+fly -t ci watch -j my-pipeline/my-job -b 42
+
+# Stream using the build's web UI URL
+fly -t ci watch -u https://ci.example.com/teams/main/pipelines/my-pipeline/jobs/my-job/builds/42
+
+# Include timestamps in the output
+fly -t ci watch -j my-pipeline/my-job --timestamps
+```
+
+<Accordion title="All watch flags">
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--job` | `-j` | Job whose build logs to stream, in `PIPELINE/JOB` format. |
+| `--build` | `-b` | Specific build number to watch (within the given job). |
+| `--url` | `-u` | Direct URL to a build or job page — fly resolves the build from the URL. |
+| `--timestamps` | `-t` | Prefix each log line with its local timestamp. |
+| `--ignore-event-parsing-errors` | | Continue streaming even if an event payload cannot be parsed. |
+| `--team` | | Target a different team than the default. |
+
+</Accordion>
+
+<Tip>
+  `fly watch` works on builds that have already completed — it replays the stored event log. This is useful for reviewing output from builds you weren't watching live.
+</Tip>
+
+---
+
+## fly abort-build
+
+`abort-build` cancels a running build. You can target a build by job name and build number, or by global build ID when no job context is available.
+
+```bash
+# Abort a build by job and build number
+fly -t ci abort-build -j my-pipeline/my-job -b 42
+
+# Abort a build by its global build ID (no job flag needed)
+fly -t ci abort-build -b 9001
+```
+
+<Accordion title="All abort-build flags">
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--build` | `-b` | **(Required)** Build number (if `--job` is set) or global build ID (if not). |
+| `--job` | `-j` | Job in `PIPELINE/JOB` format. When omitted, `--build` is interpreted as a global build ID. |
+| `--team` | | Target a different team than the default. |
+
+</Accordion>
+
+---
+
+## fly rerun-build
+
+`rerun-build` creates a new build using the **same input resource versions** that a previous build used. This is useful for reproducing a failure without waiting for new resource versions or re-triggering manually.
+
+```bash
+# Rerun build #42 of a job
+fly -t ci rerun-build -j my-pipeline/my-job -b 42
+
+# Rerun and stream the new build's output
+fly -t ci rerun-build -j my-pipeline/my-job -b 42 --watch
+```
+
+<Accordion title="All rerun-build flags">
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--job` | `-j` | **(Required)** Job in `PIPELINE/JOB` format. |
+| `--build` | `-b` | **(Required)** Build number to rerun. |
+| `--watch` | `-w` | Stream the rerun build's output immediately after it starts. |
+
+</Accordion>
+
+<Note>
+  `rerun-build` pins the exact resource versions from the original build, so the rerun is deterministic with respect to inputs. It does not guarantee the same external state (e.g. package registries, APIs called during the build).
+</Note>
+
+---
+
+## fly execute
+
+`execute` runs a **one-off build** from a local task configuration file without needing to set a pipeline at all. It uploads local directories as task inputs, runs the task on Concourse workers, and can download outputs back to the local filesystem. This is the fastest way to iterate on a task definition.
+
+```bash
+# Run a task with no inputs
+fly -t ci execute -c task.yml
+
+# Upload a local directory as a named task input
+fly -t ci execute -c task.yml -i src=.
+
+# Upload multiple inputs
+fly -t ci execute -c task.yml \
+  -i src=./my-code \
+  -i test-helpers=./helpers
+
+# Download a named task output to a local directory
+fly -t ci execute -c task.yml -i src=. -o artifacts=./dist
+
+# Pass variables into the task
+fly -t ci execute -c task.yml -v version=1.2.3 -l vars.yml
+
+# Run as privileged (requires worker configuration)
+fly -t ci execute -c task.yml --privileged
+
+# Target workers with a specific tag
+fly -t ci execute -c task.yml --tag my-worker-tag
+
+# Create the build and exit without watching logs
+fly -t ci execute -c task.yml --background
+```
+
+<Accordion title="All execute flags">
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--config` | `-c` | **(Required)** Path to the task YAML configuration file. |
+| `--input` | `-i` | `NAME=PATH` — upload a local directory as a named task input (repeatable). |
+| `--input-mapping` | `-m` | `NAME=STRING` — map a resource from `--inputs-from` to a different task input name (repeatable). |
+| `--inputs-from` | `-j` | `PIPELINE/JOB` — seed inputs from the latest successful build of a pipeline job. |
+| `--output` | `-o` | `NAME=PATH` — download a named task output to a local path after the build (repeatable). |
+| `--image` | | Name of an input (from `--inputs-from`) to use as the task's container image. |
+| `--include-ignored` | | Upload files that are listed in `.gitignore`. |
+| `--var` | `-v` | `KEY=VALUE` string variable override (repeatable). |
+| `--yaml-var` | `-y` | `KEY=VALUE` YAML-typed variable override (repeatable). |
+| `--load-vars-from` | `-l` | YAML file of variable values (repeatable). |
+| `--privileged` | `-p` | Run the task container with full Linux privileges. |
+| `--tag` | | Run the build on workers that have this tag (repeatable). |
+| `--background` | `-b` | Create the build and exit immediately — do not watch logs or retrieve outputs. |
+| `--team` | | Run the build in a different team than the default. |
+
+</Accordion>
+
+<Tabs>
+  <Tab title="Iterate on a task">
+    ```bash
+    # Edit task.yml locally, then test it instantly
+    fly -t ci execute -c task.yml -i repo=.
+
+    # After fixing a failure, re-run with strict validation
+    fly -t ci execute -c task.yml -i repo=. --privileged
+    ```
+  </Tab>
+  <Tab title="Seed inputs from a job">
+    ```bash
+    # Use the same inputs the latest build of deploy/build-image used,
+    # but run your modified task instead
+    fly -t ci execute \
+      -c task.yml \
+      -j my-pipeline/build-image
+    ```
+  </Tab>
+  <Tab title="Retrieve outputs">
+    ```bash
+    # Compile inside Concourse and pull the binary back locally
+    fly -t ci execute \
+      -c ci/tasks/build.yml \
+      -i src=. \
+      -o compiled-binary=./dist
+    ```
+  </Tab>
+</Tabs>
+
+<Warning>
+  Inputs are uploaded from your local filesystem to the Concourse worker for every `execute` run. Large directories will be slow to upload. Use `.gitignore` (or omit `--include-ignored`) to exclude build artefacts and dependencies.
+</Warning>
+
+---
+
+## fly hijack
+
+`hijack` opens an interactive shell (or runs a specific command) inside the container of a running or recently completed build step. It gives you direct access to the exact environment a build ran in, making it the most powerful tool for debugging failures.
+
+```bash
+# Hijack the latest build of a job (launches bash by default)
+fly -t ci hijack -j my-pipeline/my-job
+
+# Hijack a specific build number
+fly -t ci hijack -j my-pipeline/my-job -b 42
+
+# Run a specific command instead of an interactive shell
+fly -t ci hijack -j my-pipeline/my-job -b 42 -- /bin/sh -c "env | sort"
+
+# Hijack a specific named step within a build
+fly -t ci hijack -j my-pipeline/my-job -b 42 -s unit-tests
+
+# Hijack a resource check container
+fly -t ci hijack --check my-pipeline/my-resource
+
+# Hijack using a build's web URL
+fly -t ci hijack -u https://ci.example.com/teams/main/pipelines/my-pipeline/jobs/my-job/builds/42
+```
+
+<Accordion title="All hijack flags">
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--job` | `-j` | Job in `PIPELINE/JOB` format to hijack. |
+| `--build` | `-b` | Build number within the job, or global build ID. |
+| `--step` | `-s` | Name of the specific step to hijack (e.g. `unit`, `build`, or a resource name). |
+| `--step-type` | | Type of step to hijack: `get`, `put`, or `task`. |
+| `--check` | `-c` | Resource check container to hijack, in `PIPELINE/RESOURCE` format. |
+| `--url` | `-u` | Direct web URL to the build, job, or check container. |
+| `--handle` | | Direct container handle ID to hijack. |
+| `--attempt` | `-a` | Attempt number of the step to hijack (`N` or `N,N,...` for nested retries). |
+| `--team` | | Target a different team than the default. |
+
+</Accordion>
+
+<Note>
+  If a job's build has multiple containers (e.g. several task steps), fly will present an interactive picker to choose the target container. Specify `--step` or `--step-type` to skip the picker.
+</Note>
+
+<Tip>
+  Hijacking a **completed** build works for a short window after it finishes — Concourse retains containers briefly for post-build inspection. If the container has already been reaped you will get a "no containers" error; use `fly execute` to reproduce the environment instead.
+</Tip>
+
+<Warning>
+  A hijacked shell runs inside the real build container with full access to its filesystem, environment variables, and secrets that were mounted during the build. Treat hijack sessions with the same care as production system access.
+</Warning>

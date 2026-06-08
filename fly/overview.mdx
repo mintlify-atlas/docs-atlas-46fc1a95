@@ -1,0 +1,153 @@
+---
+title: "fly CLI: the command-line interface for Concourse CI"
+sidebarTitle: "Overview"
+description: "fly is Concourse's primary CLI for setting pipelines, triggering builds, streaming logs, hijacking containers, and managing workers and teams."
+---
+
+The `fly` CLI is the sole interface for controlling a Concourse server. Every operation — from pushing a pipeline configuration to streaming live build output to shelling into a running container — is performed through `fly`. Because `fly` communicates directly with the Concourse API, its binary version must always match the server version you are targeting; mismatched versions are reported as errors and fixed with a single `fly sync` command.
+
+## Installing fly
+
+fly binaries are distributed in two ways:
+
+<CardGroup cols={2}>
+  <Card title="Download from the Web UI" icon="browser">
+    Open your Concourse instance in a browser. A download link for your operating system appears in the **bottom-right corner** of the screen. This always serves the binary that matches your server version.
+  </Card>
+  <Card title="GitHub Releases" icon="github">
+    Download from the [Concourse GitHub releases page](https://github.com/concourse/concourse/releases). Pick the asset that matches your OS and architecture, make it executable, and place it on your `PATH`.
+  </Card>
+</CardGroup>
+
+<Tip>
+  After downloading or upgrading Concourse, run `fly -t <target> sync` to replace your local binary with the version served by the server. This is the fastest way to stay in sync.
+</Tip>
+
+## Global flags
+
+These flags are available on every `fly` invocation and are defined on the top-level `FlyCommand` struct.
+
+| Flag | Short | Description |
+|---|---|---|
+| `--target` | `-t` | Name of the saved Concourse target to use. Required by most commands. |
+| `--version` | `-v` | Print the version of fly and exit. |
+| `--verbose` | | Print raw API requests and responses for debugging. |
+| `--print-table-headers` | | Print table headers even when output is redirected. |
+
+```bash
+# Print the installed fly version
+fly --version
+
+# Run a command with verbose API logging
+fly --verbose -t ci pipelines
+```
+
+## Shell completion
+
+`fly` can generate shell completion scripts for **bash**, **zsh**, and **fish**. Source the output in your shell profile to enable tab-completion for all commands and flags.
+
+<CodeGroup>
+```bash bash
+fly completion --shell bash >> ~/.bashrc
+source ~/.bashrc
+```
+
+```zsh zsh
+fly completion --shell zsh >> ~/.zshrc
+source ~/.zshrc
+```
+
+```fish fish
+fly completion --shell fish > ~/.config/fish/completions/fly.fish
+```
+</CodeGroup>
+
+## Raw API access with fly curl
+
+The `fly curl` command (alias `c`) forwards HTTP requests directly to the Concourse API, using the stored credentials for the specified target. It is useful for exploring endpoints or scripting operations not yet covered by dedicated subcommands.
+
+```bash
+# Fetch server info
+fly -t ci curl /api/v1/info
+
+# List all pipelines via raw API
+fly -t ci curl /api/v1/teams/main/pipelines
+```
+
+<Note>
+  `fly curl` reuses the OAuth token from `~/.flyrc` for the selected target, so you do not need to pass credentials manually.
+</Note>
+
+## Command categories
+
+fly commands are grouped by the resource type they operate on. Each category has its own reference page.
+
+<CardGroup cols={2}>
+  <Card title="Login & Targets" icon="key" href="/fly/login-targets">
+    Authenticate, manage saved targets, check token status, and sync the binary.
+  </Card>
+  <Card title="Pipeline Commands" icon="diagram-project" href="/fly/pipeline-commands">
+    Set, get, pause, archive, expose, rename, validate, and format pipelines.
+  </Card>
+  <Card title="Build Commands" icon="hammer" href="/fly/build-commands">
+    Trigger jobs, watch builds, stream logs, execute one-off tasks, and abort builds.
+  </Card>
+  <Card title="Resource Commands" icon="box-archive" href="/fly/resource-commands">
+    List resources, check for new versions, pin versions, and manage version enable/disable.
+  </Card>
+  <Card title="Worker Commands" icon="server" href="/fly/worker-commands">
+    List registered workers, land workers gracefully, and prune stalled workers.
+  </Card>
+  <Card title="Team Commands" icon="people-group" href="/fly/team-commands">
+    Create, update, rename, and destroy teams, and manage team membership.
+  </Card>
+</CardGroup>
+
+## Quick reference
+
+<Accordion title="All fly commands at a glance">
+  | Command | Alias | Description |
+  |---|---|---|
+  | `login` | `l` | Authenticate with a target |
+  | `logout` | `o` | Release authentication for a target |
+  | `targets` | `ts` | List saved targets |
+  | `status` | | Check login status for a target |
+  | `userinfo` | | Display current user and team roles |
+  | `sync` | `s` | Download and replace fly with the server version |
+  | `delete-target` | `dtg` | Delete a saved target |
+  | `edit-target` | `etg` | Edit a saved target's properties |
+  | `pipelines` | `ps` | List pipelines |
+  | `set-pipeline` | `sp` | Create or update a pipeline |
+  | `get-pipeline` | `gp` | Print a pipeline's configuration |
+  | `destroy-pipeline` | `dp` | Delete a pipeline |
+  | `pause-pipeline` | `pp` | Pause a pipeline |
+  | `unpause-pipeline` | `up` | Resume a paused pipeline |
+  | `archive-pipeline` | `ap` | Archive a pipeline |
+  | `expose-pipeline` | `ep` | Make a pipeline public |
+  | `hide-pipeline` | `hp` | Hide a pipeline from the public |
+  | `rename-pipeline` | `rp` | Rename a pipeline |
+  | `validate-pipeline` | `vp` | Validate a pipeline config without applying it |
+  | `format-pipeline` | `fp` | Canonically format a pipeline config file |
+  | `trigger-job` | `tj` | Start a job in a pipeline |
+  | `builds` | `bs` | List build history |
+  | `watch` | `w` | Stream a build's output |
+  | `abort-build` | `ab` | Abort a running build |
+  | `rerun-build` | `rb` | Re-run a previous build |
+  | `execute` | `e` | Execute a one-off task with local files |
+  | `hijack` | `intercept`, `i` | Open a shell in a running container |
+  | `containers` | `cs` | List active containers |
+  | `resources` | `rs` | List resources in a pipeline |
+  | `resource-versions` | `rvs` | List versions of a resource |
+  | `check-resource` | `cr` | Trigger a resource check |
+  | `pin-resource` | `pr` | Pin a resource to a specific version |
+  | `unpin-resource` | `ur` | Remove a pinned version from a resource |
+  | `workers` | `ws` | List registered workers |
+  | `land-worker` | `lw` | Gracefully retire a worker |
+  | `prune-worker` | `pw` | Remove a stalled or retired worker |
+  | `teams` | `t` | List configured teams |
+  | `set-team` | `st` | Create or update a team |
+  | `destroy-team` | `dt` | Destroy a team and all its data |
+  | `volumes` | `vs` | List active volumes |
+  | `curl` | `c` | Make a raw API call |
+  | `completion` | | Generate shell completion script |
+</Accordion>

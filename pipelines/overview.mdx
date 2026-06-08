@@ -1,0 +1,237 @@
+---
+title: "Pipeline configuration reference for Concourse CI"
+sidebarTitle: "Overview"
+description: "Complete reference for Concourse pipeline YAML schema — groups, resources, resource_types, jobs, var_sources, prototypes, display, and user_data fields."
+---
+
+A Concourse pipeline is a YAML document that declares the full automation graph for a project: what artifacts to watch, how to build and test them, and how to ship the result. Pipelines are stateless configuration — Concourse continuously reconciles the running state of your workers against what the YAML describes, re-triggering jobs automatically as new resource versions appear.
+
+## Top-level schema
+
+The root of a pipeline document maps directly to the `Config` struct in [`atc/config.go`](https://github.com/concourse/concourse/blob/master/atc/config.go). Every field is optional except `jobs`.
+
+```yaml
+# pipeline.yml — annotated top-level structure
+groups: []          # visual tab groupings in the web UI
+var_sources: []     # named credential / variable back-ends
+resources: []       # versioned external artifacts
+resource_types: []  # custom resource-type plug-ins
+prototypes: []      # prototype resource definitions (experimental)
+jobs: []            # the build plans that do the work  ← required
+display: {}         # background image/filter for the pipeline UI
+user_data: {}       # arbitrary metadata — ignored by Concourse
+```
+
+<Note>
+  The `jobs` list is the only field Concourse strictly requires. A pipeline with
+  no resources or resource types is valid as long as it has at least one job.
+</Note>
+
+## Full annotated example
+
+The following pipeline watches a Git repository, runs tests, and publishes a Docker image. It uses groups to separate CI from CD concerns.
+
+```yaml
+groups:
+  - name: ci
+    jobs: [unit-tests, integration-tests]
+  - name: cd
+    jobs: [publish-image]
+    resources: [app-image]
+
+var_sources:
+  - name: vault
+    type: vault
+    config:
+      url: https://vault.example.com
+      auth_backend: approle
+
+resource_types:
+  - name: slack-notifier
+    type: registry-image
+    source:
+      repository: cfcommunity/slack-notification-resource
+      tag: latest
+
+resources:
+  - name: source-code
+    type: git
+    icon: github
+    source:
+      uri: https://github.com/myorg/myapp
+      branch: main
+      private_key: ((github-private-key))
+    check_every: 1m
+
+  - name: app-image
+    type: registry-image
+    icon: docker
+    source:
+      repository: myorg/myapp
+      username: ((registry-user))
+      password: ((registry-password))
+
+  - name: slack-alert
+    type: slack-notifier
+    source:
+      url: ((slack-webhook-url))
+
+jobs:
+  - name: unit-tests
+    public: true
+    serial: true
+    plan:
+      - get: source-code
+        trigger: true
+      - task: run-tests
+        file: source-code/ci/tasks/test.yml
+    on_failure:
+      put: slack-alert
+      params:
+        text: "Unit tests failed on main!"
+
+  - name: publish-image
+    plan:
+      - get: source-code
+        trigger: true
+        passed: [unit-tests]
+      - put: app-image
+        params:
+          image: source-code/Dockerfile
+
+display:
+  background_image: https://example.com/pipeline-bg.png
+  background_filter: blur(3px) brightness(0.6)
+```
+
+## Top-level fields
+
+<CardGroup cols={2}>
+  <Card title="resources" icon="box">
+    Versioned external artifacts — Git repos, Docker images, S3 buckets, etc.
+    Concourse continuously polls them for new versions.
+  </Card>
+  <Card title="jobs" icon="play">
+    Build plans made up of steps (`get`, `put`, `task`, …). Jobs are triggered
+    automatically or manually.
+  </Card>
+  <Card title="resource_types" icon="plug">
+    Custom resource-type plug-ins that extend Concourse's built-in set. Each
+    type is itself a container image.
+  </Card>
+  <Card title="groups" icon="folder">
+    Visual tabs in the pipeline UI. Purely cosmetic — groups never affect
+    scheduling or execution order.
+  </Card>
+  <Card title="var_sources" icon="key">
+    Named credential back-ends (Vault, CredHub, SSM, …) whose secrets are
+    interpolated into the config at runtime.
+  </Card>
+  <Card title="prototypes" icon="flask">
+    Experimental prototype resource definitions that follow the
+    prototype resource protocol.
+  </Card>
+  <Card title="display" icon="image">
+    Sets a `background_image` URL and optional `background_filter` CSS string
+    for the pipeline UI canvas.
+  </Card>
+  <Card title="user_data" icon="tag">
+    Arbitrary metadata attached to the pipeline. Concourse stores it but never
+    reads it — useful for tooling and auditing.
+  </Card>
+</CardGroup>
+
+## The `display` field
+
+The `display` block customises the visual appearance of the pipeline canvas in the Concourse web UI.
+
+```yaml
+display:
+  background_image: https://example.com/bg.png
+  background_filter: grayscale(40%) blur(2px)
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `background_image` | string (URL) | Image shown behind the pipeline graph. Must be an absolute HTTPS URL. |
+| `background_filter` | string | Any valid [CSS `filter`](https://developer.mozilla.org/en-US/docs/Web/CSS/filter) value, e.g. `blur(4px)`, `grayscale(50%)`, or combined values. |
+
+## Config version header
+
+When `fly` saves a pipeline with `set-pipeline`, it reads the current config version from Concourse and includes it in the `X-Concourse-Config-Version` request header. This prevents accidental overwrites caused by concurrent edits.
+
+```
+X-Concourse-Config-Version: 42
+```
+
+The constant is defined as `ConfigVersionHeader` in `atc/config.go`.
+
+## Managing pipelines with `fly`
+
+<Steps>
+  <Step title="Validate your pipeline locally">
+    Check syntax and structure without connecting to a Concourse instance.
+
+    ```bash
+    fly validate-pipeline --config pipeline.yml
+    ```
+  </Step>
+  <Step title="Format the pipeline YAML">
+    Normalise indentation and field order so diffs stay clean.
+
+    ```bash
+    fly format-pipeline --config pipeline.yml --write
+    ```
+  </Step>
+  <Step title="Apply the pipeline to a team">
+    Upload the config and set variable values.
+
+    ```bash
+    fly -t my-target set-pipeline \
+      --pipeline my-app \
+      --config pipeline.yml \
+      --var "github-private-key=$(cat ~/.ssh/id_rsa)"
+    ```
+  </Step>
+  <Step title="Unpause the pipeline">
+    New pipelines are paused by default. Resume scheduling:
+
+    ```bash
+    fly -t my-target unpause-pipeline --pipeline my-app
+    ```
+  </Step>
+</Steps>
+
+## Instanced pipelines
+
+When a pipeline name contains `((vars))` — for example `my-app-((branch))` — Concourse treats each unique set of variable values as a separate **instance** of that pipeline. All instances share the same configuration template but run independently.
+
+```bash
+fly set-pipeline \
+  --pipeline "my-app-((branch))" \
+  --config pipeline.yml \
+  --instance-var "branch=main" \
+  --instance-var "branch=feature-x"
+```
+
+<Tip>
+  Instanced pipelines are ideal for branch-based CI workflows where each branch
+  needs its own isolated pipeline state and resource history.
+</Tip>
+
+## Further reading
+
+<CardGroup cols={2}>
+  <Card title="Resources" href="/pipelines/resources" icon="box">
+    Full field reference for `resources` and `resource_types`, including
+    webhook triggers and custom check intervals.
+  </Card>
+  <Card title="Jobs & Steps" href="/pipelines/jobs-and-steps" icon="play">
+    Job configuration fields and the complete list of step types available in
+    build plans.
+  </Card>
+  <Card title="Pipeline Groups" href="/pipelines/pipeline-groups" icon="folder">
+    How to use `groups` for visual organisation and `display` to customise the
+    pipeline canvas.
+  </Card>
+</CardGroup>

@@ -1,0 +1,227 @@
+---
+title: "fly team commands: create, configure, and manage Concourse teams"
+sidebarTitle: "Team Commands"
+description: "Create and configure Concourse teams with fly: set auth providers, list teams, inspect config, rename, destroy teams, and manage users."
+---
+
+Concourse uses **teams** to provide multi-tenant isolation within a single deployment. Each team owns its own pipelines, workers (optionally tagged), and auth configuration. The `fly` CLI gives administrators full control over the team lifecycle — creating teams, configuring auth providers and role assignments, renaming teams, and permanently destroying them — as well as visibility tools for auditing active users and job state.
+
+## fly teams
+
+List all teams in the Concourse deployment. By default shows only team names; use `--details` to include each team's auth configuration.
+
+<CodeGroup>
+
+```bash List team names
+fly -t ci teams
+```
+
+```bash Include auth configuration
+fly -t ci teams --details
+```
+
+```bash JSON output
+fly -t ci teams --json
+```
+
+</CodeGroup>
+
+The `--details` flag expands the table with **name/role**, **users**, and **groups** columns — showing exactly who has access to each team under each role.
+
+---
+
+## fly set-team
+
+Create a new team or update the auth configuration of an existing one. Auth is configured by passing one or more provider-specific flags. Role assignment is appended as `:role` to the user or group value; the default role is `member` when no role is specified.
+
+<CodeGroup>
+
+```bash Local users with mixed roles
+fly -t ci set-team -n myteam \
+  --local-user alice \
+  --local-user bob:member \
+  --local-user carol:owner
+```
+
+```bash GitHub org and team
+fly -t ci set-team -n myteam \
+  --github-org myorg:owner \
+  --github-team myorg/platform:pipeline-operator
+```
+
+```bash OIDC groups
+fly -t ci set-team -n myteam \
+  --oidc-group platform-engineers:owner \
+  --oidc-group developers:member
+```
+
+```bash Skip interactive confirmation
+fly -t ci set-team -n myteam \
+  --local-user alice:owner \
+  --non-interactive
+```
+
+</CodeGroup>
+
+<Accordion title="Available auth provider flags">
+
+| Flag | Description |
+|------|-------------|
+| `--local-user username[:role]` | A user from Concourse's built-in local auth |
+| `--github-user username[:role]` | A specific GitHub user |
+| `--github-org orgname[:role]` | All members of a GitHub organisation |
+| `--github-team orgname/teamname[:role]` | Members of a specific GitHub team |
+| `--oidc-user username[:role]` | A specific OIDC user by subject |
+| `--oidc-group groupname[:role]` | Members of an OIDC group/claim |
+
+Role values are `owner`, `member`, and `pipeline-operator`. When no role suffix is given, `member` is used.
+
+</Accordion>
+
+Before applying, `set-team` prints a summary of the proposed role assignments and prompts for confirmation. Pass `--non-interactive` to skip the prompt in automated scripts.
+
+<Note>
+Running `set-team` on an existing team **replaces** the entire auth configuration — it does not merge with existing settings. Any users or groups not listed in the new command will lose access.
+</Note>
+
+<Warning>
+Team names cannot contain `/`. Identifiers with unconventional characters may produce a warning, though the operation will still proceed.
+</Warning>
+
+---
+
+## fly get-team
+
+Display the current auth configuration for a specific team, including all roles and their assigned users and groups.
+
+<CodeGroup>
+
+```bash Table output
+fly -t ci get-team -n myteam
+```
+
+```bash JSON output
+fly -t ci get-team -n myteam --json
+```
+
+</CodeGroup>
+
+The table shows each `team/role` combination with its **users** and **groups** columns. Roles with no explicit users or groups show `all` in the users column (meaning all authenticated users have that role) or `none`.
+
+---
+
+## fly rename-team
+
+Rename an existing team. The old name's pipelines, build history, and auth configuration are all preserved under the new name.
+
+```bash
+fly -t ci rename-team -o old-name -n new-name
+```
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--old-name` | `-o` | Current name of the team (required) |
+| `--new-name` | `-n` | New name for the team (required) |
+
+<Note>
+Any `fly` targets pointing at the old team name will need to be updated with `fly edit-target` after renaming.
+</Note>
+
+---
+
+## fly destroy-team
+
+Permanently delete a team and **all of its pipelines**, build history, and configuration. This operation cannot be undone.
+
+```bash
+fly -t ci destroy-team -n myteam
+```
+
+The command first prints a warning and then requires you to type the team name exactly to confirm. Pass `--non-interactive` to skip the confirmation prompt in automated workflows.
+
+```bash
+fly -t ci destroy-team -n myteam --non-interactive
+```
+
+<Warning>
+Destroying a team deletes every pipeline it owns, along with all associated build history and volumes. Concourse will refuse to destroy a team if it is the **last admin team** in the deployment, to protect against locking yourself out.
+</Warning>
+
+---
+
+## fly users
+
+List all users who have recently authenticated with the Concourse server. By default, returns users active within the last two months.
+
+<CodeGroup>
+
+```bash Active users (last 2 months)
+fly -t ci users
+```
+
+```bash Users active since a specific date
+fly -t ci users --since 2024-01-01
+```
+
+```bash JSON output
+fly -t ci users --json
+```
+
+</CodeGroup>
+
+| Flag | Description |
+|------|-------------|
+| `--since` | Filter to users whose last login is on or after this date (`yyyy-mm-dd`). Defaults to 2 months ago. Cannot be a future date. |
+| `--json` | Print result as JSON |
+
+The table shows each user's **username**, **connector** (the auth provider they used), and **last login** date.
+
+---
+
+## fly pause-job / fly unpause-job
+
+Pause or unpause a specific job within a pipeline. A paused job will not be triggered automatically by resource version changes or `passed` constraints, but any builds already running will continue to completion.
+
+<CodeGroup>
+
+```bash Pause a job
+fly -t ci pause-job -j my-pipeline/my-job
+```
+
+```bash Unpause a job
+fly -t ci unpause-job -j my-pipeline/my-job
+```
+
+```bash Scoped to a specific team
+fly -t ci pause-job -j my-pipeline/my-job --team platform-team
+```
+
+</CodeGroup>
+
+<Tip>
+Pausing a job is a safe way to temporarily disable automated triggering without needing to modify and re-apply your pipeline configuration. The job's history and pinned versions are preserved.
+</Tip>
+
+---
+
+## fly jobs
+
+List all jobs in a pipeline along with their paused state, last build status, and next scheduled trigger time.
+
+<CodeGroup>
+
+```bash Table output
+fly -t ci jobs -p my-pipeline
+```
+
+```bash JSON output
+fly -t ci jobs -p my-pipeline --json
+```
+
+```bash Scoped to a specific team
+fly -t ci jobs -p my-pipeline --team platform-team
+```
+
+</CodeGroup>
+
+The table columns are **name**, **paused**, **status**, and **next**. The `status` column reflects the result of the most recent completed build for each job.

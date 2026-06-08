@@ -1,0 +1,245 @@
+---
+title: "Authenticating and managing fly targets for Concourse"
+sidebarTitle: "Login & Targets"
+description: "Learn how to log in to Concourse with fly, manage saved targets in ~/.flyrc, check token validity, and keep the fly binary in sync with your server."
+---
+
+A **target** is a saved connection profile that binds together a Concourse server URL, a team name, and an authentication token under a short alias you choose. Once created, every subsequent `fly` command uses `-t <alias>` to reference that profile — you never have to re-type the server URL. All targets are stored in `~/.flyrc` as YAML and are managed by the commands on this page.
+
+## fly login
+
+`fly login` (alias `l`) authenticates against a Concourse server and saves the resulting token to `~/.flyrc` under the target alias you provide with `-t`.
+
+### Basic auth (username and password)
+
+```bash
+fly -t ci login -c https://ci.example.com -u admin -p password
+```
+
+### SSO / OAuth (browser-based)
+
+When no username or password are provided, `fly login` starts a local HTTP server, prints an authorization URL, and waits for the browser redirect to complete. Pass `-b` to have fly open the browser automatically.
+
+```bash
+fly -t ci login -c https://ci.example.com -b
+```
+
+fly prints the authorization URL, opens your browser, and stores the token once the OAuth flow completes.
+
+### Login flags
+
+| Flag | Short | Description |
+|---|---|---|
+| `--concourse-url` | `-c` | Concourse server URL. Required for a first-time login to a target. Omit to reuse the URL stored for an existing target. |
+| `--username` | `-u` | Username for local (basic) auth. |
+| `--password` | `-p` | Password for local (basic) auth. |
+| `--team-name` | `-n` | Team to authenticate against. Defaults to `main`, or to the team previously stored for the target. |
+| `--insecure` | `-k` | Skip TLS certificate verification. Use only for self-signed certs in trusted environments. |
+| `--ca-cert` | | Path to a PEM-encoded CA certificate file to trust. |
+| `--client-cert` | | Path to a PEM-encoded client certificate for mutual TLS. |
+| `--client-key` | | Path to a PEM-encoded client key for mutual TLS. |
+| `--open-browser` | `-b` | Automatically open the browser for OAuth / SSO flows. |
+
+<Warning>
+  Passing `-p` on the command line exposes your password in shell history. For automated environments, prefer setting credentials via environment variables or a secrets manager.
+</Warning>
+
+### Re-authenticating an existing target
+
+If a target already exists in `~/.flyrc`, you can omit `-c` to reuse its stored URL:
+
+```bash
+fly -t ci login -u admin -p newpassword
+```
+
+fly will update the token in place without changing the URL or team.
+
+<Note>
+  After login, fly verifies that the authenticated user is actually a member of the requested team. If the team does not exist or you are not a member, the login will fail with a clear error message even if authentication succeeded.
+</Note>
+
+---
+
+## fly logout
+
+`fly logout` (alias `o`) revokes the stored token for a target by calling the server's logout endpoint and then removes the token from `~/.flyrc`.
+
+```bash
+# Logout of a single target
+fly -t ci logout
+
+# Logout of all targets at once
+fly logout --all
+```
+
+| Flag | Short | Description |
+|---|---|---|
+| `--all` | `-a` | Log out of every target stored in `~/.flyrc`. Cannot be combined with `-t`. |
+
+---
+
+## fly targets
+
+`fly targets` (alias `ts`) lists all targets saved in `~/.flyrc`, showing the alias, server URL, team, and token expiry time.
+
+```bash
+fly targets
+```
+
+Example output:
+
+```
+name  url                       team   expiry
+ci    https://ci.example.com    main   Mon, 01 Jan 2026 00:00:00 UTC
+prod  https://prod.example.com  ops    Wed, 15 Jan 2026 12:00:00 UTC
+```
+
+---
+
+## fly status
+
+`fly status` checks whether the token stored for a target is still valid by calling the server's user-info endpoint. It is a quick way to verify you are still logged in before running a longer operation.
+
+```bash
+fly -t ci status
+```
+
+- Prints `logged in successfully` if the token is valid.
+- Prints an error and prompts you to log in again if the token has expired or is missing.
+
+---
+
+## fly userinfo
+
+`fly userinfo` displays the username and team/role memberships for the currently authenticated user on the target.
+
+```bash
+fly -t ci userinfo
+```
+
+Example output:
+
+```
+username  team/role
+admin     main/owner
+```
+
+Pass `--json` to receive machine-readable output:
+
+```bash
+fly -t ci userinfo --json
+```
+
+| Flag | Description |
+|---|---|
+| `--json` | Print result as JSON instead of a table. |
+
+---
+
+## fly sync
+
+`fly sync` (alias `s`) downloads the fly binary served by the target server and replaces the currently running binary on disk. Run this whenever you upgrade Concourse or switch between servers of different versions.
+
+```bash
+fly -t ci sync
+```
+
+fly compares the local version against the server version. If they match, it skips the download unless `--force` is specified.
+
+```bash
+# Force re-download even if versions already match
+fly -t ci sync --force
+```
+
+<Steps>
+  <Step title="Check the version mismatch">
+    fly automatically warns you with `fly version (X.Y.Z) is out of sync with the target (A.B.C)` whenever you run any command against a mismatched server.
+  </Step>
+  <Step title="Run fly sync">
+    ```bash
+    fly -t ci sync
+    ```
+    fly downloads the binary with a progress bar and atomically replaces itself on disk.
+  </Step>
+  <Step title="Verify">
+    ```bash
+    fly --version
+    ```
+    Confirm the version now matches your Concourse server.
+  </Step>
+</Steps>
+
+| Flag | Short | Description |
+|---|---|---|
+| `--force` | `-f` | Sync even if the local and server versions already match. |
+| `--concourse-url` | `-c` | Sync against a URL without a saved target. |
+| `--insecure` | `-k` | Skip TLS certificate verification. |
+| `--ca-cert` | | Path to a PEM-encoded CA certificate file. |
+| `--client-cert` | | Path to a PEM-encoded client certificate. |
+| `--client-key` | | Path to a PEM-encoded client key. |
+
+---
+
+## fly delete-target
+
+`fly delete-target` (alias `dtg`) removes one or all saved targets from `~/.flyrc`. Deleted targets must be re-created with `fly login`.
+
+```bash
+# Delete a single target
+fly -t ci delete-target
+
+# Delete all saved targets
+fly delete-target --all
+```
+
+| Flag | Short | Description |
+|---|---|---|
+| `--all` | `-a` | Delete every target in `~/.flyrc`. |
+
+---
+
+## fly edit-target
+
+`fly edit-target` (alias `etg`) updates properties of an existing target in `~/.flyrc` without requiring re-authentication. At least one of the update flags must be provided.
+
+```bash
+# Change the team for the 'ci' target
+fly -t ci edit-target -n new-team-name
+
+# Update the server URL for the 'ci' target
+fly -t ci edit-target -u https://new-ci.example.com
+
+# Rename the target alias itself
+fly -t ci edit-target --target-name staging
+```
+
+| Flag | Short | Description |
+|---|---|---|
+| `--target-name` | | Rename the target alias. |
+| `--concourse-url` | `-u` | Update the server URL stored for the target. |
+| `--team-name` | `-n` | Update the team name stored for the target. |
+
+<Tip>
+  Use `fly edit-target` when a Concourse server migrates to a new domain — update the URL in place rather than logging in again and losing your existing alias.
+</Tip>
+
+---
+
+## The ~/.flyrc file
+
+All target data is persisted in `~/.flyrc`. It is a plain YAML file you can inspect directly, though the `fly` commands above are the recommended way to manage it.
+
+```yaml
+targets:
+  ci:
+    api: https://ci.example.com
+    team: main
+    insecure: false
+    token:
+      type: Bearer
+      value: eyJ...
+```
+
+<Warning>
+  `~/.flyrc` contains live authentication tokens. Treat it like a credentials file — restrict its permissions and avoid committing it to source control.
+</Warning>

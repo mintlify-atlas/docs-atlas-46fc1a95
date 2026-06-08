@@ -1,0 +1,208 @@
+---
+title: "The put step: publish artifacts and trigger outputs"
+sidebarTitle: "put"
+description: "Use the put step to push to external resources — deploying apps, pushing images, or sending notifications — and capture the resulting version."
+---
+
+The `put` step invokes a resource's `out` script to publish or update something in an external system — whether that means pushing a Docker image to a registry, deploying an application to Cloud Foundry, creating a GitHub release, or sending a Slack message. After a successful put, Concourse automatically runs an implicit `get` on the same resource to fetch back the version that was just created. This implicit get makes the new version available to downstream steps and ensures that later `get` steps with `passed` constraints will correctly see the put's output version as having flowed through this job.
+
+## Fields
+
+<ParamField path="put" type="string" required>
+  The logical name of this step, and by default the name of the resource to
+  update. The step name is used to refer to the implicit get result in
+  subsequent steps.
+</ParamField>
+
+<ParamField path="resource" type="string">
+  Override which pipeline resource to push to. Useful when you want the step
+  name to differ from the resource name — for example, naming the step
+  `versioned-image` while pushing to the resource `ecr-image`.
+</ParamField>
+
+<ParamField path="params" type="map">
+  Arbitrary key/value parameters forwarded to the resource's `out` script.
+  The valid keys depend entirely on the resource type being used (e.g.
+  `image`, `manifest`, `path`, `tag`).
+</ParamField>
+
+<ParamField path="inputs" type="string | string[]">
+  Which step inputs (fetched artifacts) to make available to the `out` script.
+  Accepts:
+
+  - `all` — pass every artifact currently in the build (the default before
+    Concourse 6.0).
+  - `detect` *(recommended default)* — automatically detect which inputs the
+    resource's `out` script needs based on its declared input list.
+  - An explicit list of names — only pass the listed artifacts.
+
+  Limiting inputs reduces the amount of data uploaded to the worker running
+  the put, which can significantly speed up builds.
+</ParamField>
+
+<ParamField path="get_params" type="map">
+  Parameters forwarded to the implicit `get` that follows a successful put.
+  Use this to customize how the result version is fetched back — for example,
+  skipping certificate checks or pulling a specific format.
+</ParamField>
+
+<ParamField path="no_get" type="boolean">
+  When `true`, skip the implicit `get` that normally follows a successful put.
+  Defaults to `false`. Use this when you don't need the output version in
+  subsequent steps and want to save time.
+</ParamField>
+
+<ParamField path="tags" type="string[]">
+  Run the put operation on workers that have **all** of the listed tags.
+  Useful for routing puts to workers with specific network access or
+  credentials.
+</ParamField>
+
+<ParamField path="timeout" type="string">
+  Abort the put step if it does not complete within the given duration. Uses
+  Go duration syntax: `30m`, `1h`, `90s`. Fetching the resource type's image
+  does **not** count against this timeout.
+</ParamField>
+
+---
+
+## Examples
+
+<CodeGroup>
+
+```yaml Push a Docker image
+- put: my-image
+  params:
+    image: built-image/image.tar
+```
+
+```yaml Deploy to Cloud Foundry
+- put: staging-cf
+  params:
+    manifest: repo/manifest.yml
+    path: repo/
+  get_params:
+    skip_cert_check: true
+```
+
+```yaml Create a GitHub release
+- put: gh-release
+  params:
+    name: version/version
+    tag: version/version
+    globs:
+      - binaries/*
+```
+
+```yaml Send a Slack notification
+- put: slack-alert
+  params:
+    text: "Build succeeded! :white_check_mark:"
+  no_get: true
+```
+
+```yaml Limit inputs explicitly
+- put: s3-artifact
+  inputs: [compiled-binary]
+  params:
+    file: compiled-binary/app-*.tar.gz
+```
+
+</CodeGroup>
+
+---
+
+## The implicit get after put
+
+Every successful `put` step is automatically followed by a `get` on the same
+resource. This serves two purposes:
+
+1. **Version tracking** — the exact version created by the put (e.g. a
+   specific S3 object key, image digest, or git tag SHA) is recorded in the
+   build and made available to subsequent steps.
+2. **Pipeline chaining** — downstream jobs that include this resource in a
+   `get` step with a `passed` constraint will see the version that came out of
+   this put.
+
+```yaml
+jobs:
+  - name: publish
+    plan:
+      - get: repo
+        trigger: true
+      - put: versioned-image          # out → creates image version
+        params:
+          image: built-image/image.tar
+        # implicit get runs here → fetches back the new image digest
+
+  - name: deploy
+    plan:
+      - get: versioned-image
+        passed: [publish]             # picks up the version from the put above
+      - task: deploy-image
+        config: ...
+```
+
+<Note>
+  The implicit get uses the resource's normal `in` script. If the `out` script
+  returns a version map, Concourse fetches exactly that version. Set
+  `get_params` on the put step to customise the implicit get's behavior.
+</Note>
+
+<Tip>
+  If you are putting to a resource purely for its side effects (sending a
+  notification, writing a file) and do not need the resulting version
+  downstream, set `no_get: true` to skip the implicit get and keep your builds
+  faster.
+</Tip>
+
+---
+
+## Choosing an `inputs` strategy
+
+<Tabs>
+  <Tab title="detect (recommended)">
+    Concourse inspects the resource type's declared input list and only
+    uploads artifacts whose names match. This is the safest default: you get
+    only what the resource needs without having to enumerate it manually.
+
+    ```yaml
+    - put: my-resource
+      inputs: detect
+      params:
+        file: output/*.tar.gz
+    ```
+  </Tab>
+  <Tab title="Explicit list">
+    Name exactly which artifacts to upload. Use this when you know precisely
+    which inputs the put needs and want to be explicit or when `detect` does
+    not work for a custom resource type.
+
+    ```yaml
+    - put: my-resource
+      inputs: [compiled-binary, version-file]
+      params:
+        file: compiled-binary/app.tar.gz
+        version: version-file/version
+    ```
+  </Tab>
+  <Tab title="all">
+    Upload every artifact currently available in the build. This is the
+    historical default and is the most convenient but can be slow for builds
+    with many large inputs.
+
+    ```yaml
+    - put: my-resource
+      inputs: all
+      params:
+        file: output/*.tar.gz
+    ```
+  </Tab>
+</Tabs>
+
+<Warning>
+  Using `inputs: all` in a build that has already fetched several large
+  repositories or binary artifacts can significantly increase the time spent
+  uploading data to the worker. Prefer `detect` or an explicit list for
+  production pipelines.
+</Warning>

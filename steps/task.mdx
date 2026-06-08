@@ -1,0 +1,328 @@
+---
+title: "The task step: run scripts in isolated containers"
+sidebarTitle: "task"
+description: "Use the task step to execute arbitrary scripts in a fresh container, with full control over the image, inputs, outputs, environment, and resource limits."
+---
+
+The `task` step is the primary unit of work in a Concourse build. It spins up a fresh, isolated container from a specified image, mounts the declared inputs from prior `get` steps into the container's filesystem, runs a script, and then captures declared output directories for use by later steps. Every task runs in a clean environment with no leftover state from previous tasks — the only way data flows between steps is through explicitly declared inputs and outputs. You can define a task's configuration inline within the pipeline YAML or — more commonly — in a separate YAML file that lives inside a source repository, so the build definition evolves alongside the code.
+
+## Step fields
+
+<ParamField path="task" type="string" required>
+  The display name of this task step, shown in the build log UI. Does not need
+  to match any file or resource name.
+</ParamField>
+
+<ParamField path="config" type="TaskConfig">
+  An inline task configuration block. Specify this **or** `file`, not both.
+  See [Task config fields](#task-config-fields) below for the full schema.
+</ParamField>
+
+<ParamField path="file" type="string">
+  Path to a task YAML file relative to a fetched resource's directory, in the
+  form `resource-name/path/to/task.yml`. The file must conform to the
+  TaskConfig schema. Specify this **or** `config`, not both.
+</ParamField>
+
+<ParamField path="image" type="string">
+  The name of a `get` step in the current build whose fetched artifact should
+  be used as the container image. This overrides the `image_resource` defined
+  inside the task config, letting the pipeline control exactly which image
+  version is used.
+</ParamField>
+
+<ParamField path="params" type="map">
+  Environment variables to set inside the container, merging with (and
+  overriding) any `params` defined in the task config. Values are always
+  treated as strings.
+</ParamField>
+
+<ParamField path="vars" type="map">
+  Template variable values used to interpolate `((var))` placeholders inside
+  the task's `file` config. Not passed as environment variables.
+</ParamField>
+
+<ParamField path="input_mapping" type="map[string]string">
+  Rename inputs for this step only. The key is the name expected by the task
+  config; the value is the actual artifact name available in the build. For
+  example, `{src: my-app-repo}` satisfies a task that declares an input named
+  `src` by mounting the `my-app-repo` artifact.
+</ParamField>
+
+<ParamField path="output_mapping" type="map[string]string">
+  Rename outputs for this step only. The key is the output name declared in
+  the task config; the value is the name it should have in the build after the
+  task completes.
+</ParamField>
+
+<ParamField path="privileged" type="boolean">
+  Run the container with elevated privileges (equivalent to Docker's
+  `--privileged`). Use only when necessary — for example, for tasks that need
+  to run Docker-in-Docker or manipulate kernel settings. Defaults to `false`.
+</ParamField>
+
+<ParamField path="tags" type="string[]">
+  Run the task on workers that have **all** of the listed tags. Use to route
+  tasks to workers with specific hardware, network access, or installed tools.
+</ParamField>
+
+<ParamField path="timeout" type="string">
+  Abort the task if it does not finish within the given duration. Uses Go
+  duration syntax: `30m`, `1h`, `2h30m`. Image fetching does **not** count
+  against this timeout.
+</ParamField>
+
+<ParamField path="attempts" type="integer">
+  Retry the task up to this many times on failure. The step succeeds as soon
+  as any attempt exits `0`.
+</ParamField>
+
+---
+
+## Task config fields
+
+The task configuration can be provided inline under `config:` or in a
+separate file referenced by `file:`. Both forms use the same schema.
+
+<ParamField path="platform" type="string" required>
+  The operating system the task must run on. One of `linux`, `windows`, or
+  `darwin`. Concourse schedules the task on a worker that matches this
+  platform.
+</ParamField>
+
+<ParamField path="image_resource" type="ImageResource">
+  The container image to use for the task. Defined the same way as a pipeline
+  resource — specify `type`, `source`, and optionally `version`, `params`, and
+  `tags`.
+
+  ```yaml
+  image_resource:
+    type: registry-image
+    source:
+      repository: golang
+      tag: "1.21"
+  ```
+</ParamField>
+
+<ParamField path="rootfs_uri" type="string">
+  An alternative to `image_resource` for specifying the container image as a
+  raw rootfs URI. Prefer `image_resource` for most use cases.
+</ParamField>
+
+<ParamField path="inputs" type="TaskInputConfig[]">
+  Artifacts that must be present before the task can run. Each entry has:
+  - `name` (required) — the name of the artifact (must match a prior `get`
+    step name or an output of a prior task, subject to any `input_mapping`).
+  - `path` (optional) — mount point inside the container; defaults to the
+    input name.
+  - `optional` (optional, boolean) — if `true`, the build does not fail if
+    this input is missing.
+</ParamField>
+
+<ParamField path="outputs" type="TaskOutputConfig[]">
+  Directories the task will write to that should be preserved after the
+  container exits. Each entry has:
+  - `name` (required) — identifies the output artifact.
+  - `path` (optional) — directory path inside the container; defaults to the
+    output name.
+</ParamField>
+
+<ParamField path="caches" type="TaskCacheConfig[]">
+  Directories that persist across runs of this task on the same worker. Each
+  entry has:
+  - `path` (required) — directory path inside the container to cache.
+  - `ttl` (optional) — Go duration string; cached data older than this is
+    evicted. Must be at least `1s`.
+
+  Caches are scoped per task-name and worker. They speed up builds that
+  download large dependency trees (e.g. `node_modules`, Go module cache).
+</ParamField>
+
+<ParamField path="params" type="map">
+  Environment variables to set in the container. Any key/value string pairs.
+  Can be overridden by `params` on the task step itself.
+</ParamField>
+
+<ParamField path="run" type="TaskRunConfig" required>
+  The command to execute inside the container. Fields:
+  - `path` (required) — the executable to run (e.g. `bash`, `sh`,
+    `./ci/test.sh`).
+  - `args` (optional) — list of arguments to pass to the executable.
+  - `dir` (optional) — working directory inside the container; defaults to
+    the root of the first input.
+  - `user` (optional) — run as this user; defaults to whatever the image
+    specifies.
+</ParamField>
+
+---
+
+## Examples
+
+<Tabs>
+  <Tab title="Task file (recommended)">
+    Store your task config in the repository so it evolves with the code:
+
+    ```yaml
+    # ci/test.yml
+    platform: linux
+
+    image_resource:
+      type: registry-image
+      source:
+        repository: golang
+        tag: "1.21"
+
+    inputs:
+      - name: src
+
+    outputs:
+      - name: test-results
+
+    caches:
+      - path: pkg/mod   # Go module cache persists across builds
+
+    run:
+      path: sh
+      args:
+        - -exc
+        - |
+          cd src
+          go test -v ./... | tee ../test-results/results.txt
+    ```
+
+    Reference it from the pipeline:
+
+    ```yaml
+    - get: src
+      trigger: true
+    - task: run-tests
+      file: src/ci/test.yml
+    ```
+  </Tab>
+  <Tab title="Inline config">
+    Define the task entirely within the pipeline YAML — useful for simple,
+    short tasks:
+
+    ```yaml
+    - task: run-tests
+      config:
+        platform: linux
+        image_resource:
+          type: registry-image
+          source: {repository: alpine}
+        inputs:
+          - name: src
+        run:
+          path: sh
+          args:
+            - -exc
+            - |
+              cd src
+              ./run-tests.sh
+    ```
+  </Tab>
+  <Tab title="Input & output mapping">
+    Adapt task inputs/outputs to your build's artifact names:
+
+    ```yaml
+    - get: my-app-repo
+    - task: build
+      file: my-app-repo/ci/build.yml
+      input_mapping:
+        src: my-app-repo       # task expects "src", build has "my-app-repo"
+      output_mapping:
+        dist: app-binaries     # task produces "dist", rename to "app-binaries"
+    - put: s3-artifact
+      params:
+        file: app-binaries/*.tar.gz
+    ```
+  </Tab>
+  <Tab title="Override image from a get">
+    Pin the container image to an exact version fetched earlier in the build:
+
+    ```yaml
+    - get: ci-image
+      resource: my-ci-image
+      params: {format: oci}
+    - task: run-tests
+      image: ci-image          # use the fetched image, not image_resource
+      config:
+        platform: linux
+        run:
+          path: ./src/ci/test.sh
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Complete task file reference
+
+```yaml
+# ci/full-example.yml
+platform: linux           # required: linux | windows | darwin
+
+image_resource:           # required (unless rootfs_uri is used)
+  type: registry-image
+  source:
+    repository: python
+    tag: "3.12-slim"
+  # optional fields:
+  version: {digest: "sha256:abc123"}
+  params: {}
+  tags: []
+
+inputs:
+  - name: source-code           # required: artifact name
+    path: src                   # optional: mount path (default = name)
+  - name: secrets
+    optional: true              # optional: don't fail if missing
+
+outputs:
+  - name: dist                  # required: artifact name
+    path: build/dist            # optional: path inside container
+
+caches:
+  - path: .venv                 # directory to persist between runs
+    ttl: 24h                    # optional: evict after this duration
+
+params:                         # environment variables
+  ENVIRONMENT: test
+  LOG_LEVEL: debug
+
+run:
+  path: bash                    # required: executable
+  args:                         # optional: arguments
+    - -exc
+    - |
+      pip install -r src/requirements.txt
+      cd src && pytest tests/
+  dir: /workspace               # optional: working directory
+  user: ci                      # optional: run as this user
+```
+
+---
+
+## Data flow between tasks
+
+<Note>
+  Inputs and outputs are the **only** way data moves between steps. A task
+  cannot read from a directory unless it declares it as an input. A task
+  cannot write data visible to later steps unless it declares it as an output.
+</Note>
+
+```yaml
+- get: repo
+- task: compile
+  file: repo/ci/compile.yml
+  # compile declares output: "binary"
+- task: test
+  file: repo/ci/test.yml
+  # test declares input: "binary" — automatically mounted from compile's output
+```
+
+<Tip>
+  If a task fails, Concourse marks the entire build as failed and does not run
+  subsequent steps (unless those steps are in `ensure` or `on_failure` hooks).
+  Use `attempts` to retry flaky tasks before giving up.
+</Tip>

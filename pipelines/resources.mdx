@@ -1,0 +1,319 @@
+---
+title: "Resources in Concourse: versioned artifact configuration"
+sidebarTitle: "Resources"
+description: "Field reference for ResourceConfig and ResourceType: source, check_every, webhook tokens, tags, version pinning, icons, and custom resource-type plug-ins."
+---
+
+Resources are the beating heart of every Concourse pipeline. A resource represents a versioned, external artifact — a Git repository, a container image registry, an S3 bucket, a time schedule, or any other thing that can be checked for new versions. Concourse continuously polls each resource and, when a new version appears, triggers any job that has `trigger: true` on a `get` step for that resource.
+
+## `ResourceConfig` fields
+
+Each entry in the `resources` list maps to the `ResourceConfig` struct defined in [`atc/config.go`](https://github.com/concourse/concourse/blob/master/atc/config.go).
+
+<Accordion title="Full ResourceConfig struct (Go source)">
+```go
+type ResourceConfig struct {
+    Name                 string      `json:"name"`
+    OldName              string      `json:"old_name,omitempty"`
+    Public               bool        `json:"public,omitempty"`
+    WebhookToken         string      `json:"webhook_token,omitempty"`
+    Type                 string      `json:"type"`
+    Source               Source      `json:"source"`
+    Defaults             Source      `json:"defaults,omitempty"`
+    CheckEvery           *CheckEvery `json:"check_every,omitempty"`
+    CheckTimeout         string      `json:"check_timeout,omitempty"`
+    Tags                 Tags        `json:"tags,omitempty"`
+    Version              Version     `json:"version,omitempty"`
+    Icon                 string      `json:"icon,omitempty"`
+    ExposeBuildCreatedBy bool        `json:"expose_build_created_by,omitempty"`
+}
+```
+</Accordion>
+
+<ParamField path="name" type="string" required>
+  Unique identifier for the resource within the pipeline. Referenced by `get`
+  and `put` steps. Must be unique across all resources in the pipeline.
+</ParamField>
+
+<ParamField path="type" type="string" required>
+  The resource type plug-in to use, e.g. `git`, `registry-image`, `s3`. Must
+  match a built-in type or a name defined in `resource_types`.
+</ParamField>
+
+<ParamField path="source" type="object" required>
+  An arbitrary map of configuration passed to the resource type's `check`, `in`,
+  and `out` scripts. The shape depends entirely on the resource type. Credentials
+  should be parameterised with `((var_name))` interpolation.
+</ParamField>
+
+<ParamField path="old_name" type="string">
+  When renaming a resource, set `old_name` to the previous name. Concourse will
+  migrate version history from the old resource to the new one on the next
+  `set-pipeline`. Remove `old_name` once the rename is stable.
+</ParamField>
+
+<ParamField path="public" type="boolean" default="false">
+  If `true`, resource versions and metadata are visible to unauthenticated users
+  in the web UI and API without requiring login.
+</ParamField>
+
+<ParamField path="webhook_token" type="string">
+  A secret token that enables external systems to trigger an immediate check via
+  HTTP POST without waiting for the polling interval. See [Webhook Triggers](#webhook-triggers).
+</ParamField>
+
+<ParamField path="check_every" type="string | never">
+  How often Concourse polls the resource for new versions. Accepts Go duration
+  strings (`1m`, `5m30s`, `24h`) or the literal string `never` to disable
+  automatic polling entirely. If omitted, Concourse uses the system default.
+</ParamField>
+
+<ParamField path="check_timeout" type="string">
+  Maximum duration a `check` script is allowed to run before Concourse times it
+  out, e.g. `1m` or `30s`. Defaults to the system-wide resource check timeout.
+</ParamField>
+
+<ParamField path="tags" type="[]string">
+  Constrain checks to workers that have all the specified tags. Useful when a
+  resource must run on workers with specific network access or capabilities.
+</ParamField>
+
+<ParamField path="version" type="object">
+  Pin the resource to a specific version. Concourse will always resolve this
+  resource to the pinned version instead of the latest. Useful for locking
+  dependencies during an incident.
+</ParamField>
+
+<ParamField path="icon" type="string">
+  A [Material Design icon](https://materialdesignicons.com/) name (without the
+  `mdi-` prefix) displayed next to the resource name in the web UI, e.g.
+  `github`, `docker`, `aws`.
+</ParamField>
+
+<ParamField path="defaults" type="object">
+  Default `source` values merged into every `get` and `put` step that references
+  this resource. Step-level `params` take precedence over `defaults`.
+</ParamField>
+
+<ParamField path="expose_build_created_by" type="boolean" default="false">
+  When `true`, the username of the person who triggered the build is exposed to
+  the resource's `put` step as metadata.
+</ParamField>
+
+## Resource configuration examples
+
+<Tabs>
+  <Tab title="Git repository">
+    ```yaml
+    resources:
+      - name: my-repo
+        type: git
+        icon: github
+        source:
+          uri: https://github.com/myorg/myrepo
+          branch: main
+          private_key: ((github-deploy-key))
+        check_every: 1m
+    ```
+  </Tab>
+  <Tab title="Docker / OCI image">
+    ```yaml
+    resources:
+      - name: app-image
+        type: registry-image
+        icon: docker
+        source:
+          repository: myorg/myapp
+          username: ((registry-user))
+          password: ((registry-pass))
+          tag: latest
+    ```
+  </Tab>
+  <Tab title="S3 bucket">
+    ```yaml
+    resources:
+      - name: release-tarball
+        type: s3
+        icon: aws
+        source:
+          bucket: my-releases
+          regexp: myapp-(.*).tgz
+          access_key_id: ((aws-access-key))
+          secret_access_key: ((aws-secret-key))
+          region_name: us-east-1
+    ```
+  </Tab>
+  <Tab title="Pinned version">
+    ```yaml
+    resources:
+      - name: base-image
+        type: registry-image
+        source:
+          repository: ubuntu
+        version:
+          digest: sha256:abc123...
+    ```
+  </Tab>
+</Tabs>
+
+## `check_every` format
+
+The `check_every` field accepts a Go [`time.Duration`](https://pkg.go.dev/time#ParseDuration) string or the special value `never`.
+
+| Value | Meaning |
+|---|---|
+| `1m` | Poll every 1 minute |
+| `5m30s` | Poll every 5 minutes and 30 seconds |
+| `24h` | Poll once per day |
+| `never` | Disable automatic polling entirely |
+
+<Note>
+  Setting `check_every: never` does not disable webhook-triggered checks. You can
+  still POST to the webhook URL to trigger an immediate check. This is useful for
+  resources driven entirely by external events.
+</Note>
+
+## Webhook triggers
+
+When `webhook_token` is set, Concourse registers an HTTP endpoint that external systems can POST to in order to trigger an immediate resource check — without waiting for the next scheduled poll.
+
+**Endpoint format:**
+
+```
+POST /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/check/webhook?webhook_token=TOKEN
+```
+
+**Example using `curl`:**
+
+```bash
+curl -X POST \
+  "https://concourse.example.com/api/v1/teams/main/pipelines/my-app/resources/my-repo/check/webhook?webhook_token=s3cr3t"
+```
+
+**Pipeline configuration:**
+
+```yaml
+resources:
+  - name: my-repo
+    type: git
+    webhook_token: ((github-webhook-token))
+    check_every: never   # rely entirely on webhooks
+    source:
+      uri: https://github.com/myorg/myrepo
+      branch: main
+```
+
+<Tip>
+  Pair `webhook_token` with `check_every: never` on high-frequency repositories
+  to eliminate polling overhead entirely and get near-instant build triggers.
+</Tip>
+
+<Warning>
+  The `webhook_token` value is visible in the pipeline config returned by the
+  API. Always reference it via a credential manager (`((var))`) rather than
+  hard-coding it.
+</Warning>
+
+## Resource types
+
+Resource types define the OCI container image that implements a resource's `check`, `in`, and `out` lifecycle. Concourse ships with several built-in types; you can define custom types in the `resource_types` list.
+
+### Built-in resource types
+
+<CardGroup cols={2}>
+  <Card title="git" icon="github">
+    Tracks commits on a Git branch, tag, or ref. The most commonly used resource
+    type for triggering CI on code changes.
+  </Card>
+  <Card title="registry-image" icon="docker">
+    Pulls and pushes OCI/Docker images from any container registry. Replaces the
+    older `docker-image` type.
+  </Card>
+  <Card title="s3" icon="aws">
+    Detects, downloads, and uploads files to/from an Amazon S3 bucket (or
+    compatible object store).
+  </Card>
+  <Card title="semver" icon="tag">
+    Manages a version number stored as a file in S3, Git, or other backends.
+    Supports bumping major, minor, and patch components.
+  </Card>
+  <Card title="time" icon="clock">
+    Emits a new version on a configurable schedule using cron syntax or an
+    interval. Useful for nightly builds.
+  </Card>
+  <Card title="github-release" icon="github">
+    Tracks GitHub releases (and pre-releases) for a repository and can publish
+    new releases with assets.
+  </Card>
+</CardGroup>
+
+### Defining custom resource types
+
+Custom resource types are defined under `resource_types` and reference a container image that implements the Concourse resource interface.
+
+```yaml
+resource_types:
+  - name: slack-notifier
+    type: registry-image
+    source:
+      repository: cfcommunity/slack-notification-resource
+      tag: latest
+```
+
+The `ResourceType` struct supports the same fields as `ResourceConfig` plus `privileged` and `params`:
+
+<ParamField path="name" type="string" required>
+  Unique name for this resource type, referenced by `type:` in resource entries.
+</ParamField>
+
+<ParamField path="type" type="string" required>
+  The base type used to *fetch* this resource type's container image. Almost
+  always `registry-image`.
+</ParamField>
+
+<ParamField path="source" type="object" required>
+  Source configuration passed to the base type to locate the container image.
+</ParamField>
+
+<ParamField path="defaults" type="object">
+  Default `source` values merged into every resource of this type.
+</ParamField>
+
+<ParamField path="privileged" type="boolean" default="false">
+  Run the resource type's containers in privileged mode. Required for resource
+  types that manipulate cgroups or run nested containers (e.g. `docker-image`).
+</ParamField>
+
+<ParamField path="params" type="object">
+  Parameters passed to the `in` script when fetching the resource type's image.
+</ParamField>
+
+<ParamField path="check_every" type="string">
+  Override the interval at which Concourse checks for updates to the resource
+  type's image itself.
+</ParamField>
+
+<ParamField path="tags" type="[]string">
+  Constrain resource type image checks to tagged workers.
+</ParamField>
+
+### Custom type example
+
+```yaml
+resource_types:
+  - name: terraform
+    type: registry-image
+    source:
+      repository: ljfranklin/terraform-resource
+      tag: 1.4.6
+
+resources:
+  - name: infra
+    type: terraform          # references the custom type above
+    source:
+      backend_type: s3
+      backend_config:
+        bucket: my-tf-state
+        key: prod.tfstate
+      env_name: production
+```

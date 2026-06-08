@@ -1,0 +1,224 @@
+---
+title: Deploy Concourse CI with Docker, Kubernetes, or binary
+sidebarTitle: Deployment
+description: Deploy Concourse CI with Docker Compose, Helm, BOSH, or bare binary. Covers RSA/SSH key generation, web node configuration, and database migrations.
+---
+
+Concourse is distributed as a single self-contained binary called `concourse`. That binary exposes several sub-commands: `web` runs the ATC scheduler and TSA gateway together, `worker` runs and registers a build agent, `quickstart` runs both in one process (development only), `migrate` applies database migrations, `land-worker` and `retire-worker` manage worker lifecycle, and `generate-key` creates the RSA/SSH keys that all components share. Choosing a deployment model means deciding how you want to run those two long-lived processes — `web` and `worker` — and how to wire them to a PostgreSQL database.
+
+## Deployment options
+
+<CardGroup cols={2}>
+  <Card title="Docker Compose" icon="docker">
+    Fastest path to a running cluster. Ideal for local development and CI-of-CI environments. Uses the official `concourse/concourse` image.
+  </Card>
+  <Card title="Kubernetes / Helm" icon="helm">
+    The community [concourse/concourse-chart](https://github.com/concourse/concourse-chart) Helm chart deploys web and worker as separate Deployments with a bundled PostgreSQL sub-chart.
+  </Card>
+  <Card title="BOSH Release" icon="server">
+    The [concourse/concourse-bosh-release](https://github.com/concourse/concourse-bosh-release) is the recommended path for large, HA on-premise deployments managed by BOSH.
+  </Card>
+  <Card title="Bare binary" icon="terminal">
+    Download a release tarball, generate keys, start `concourse web` and `concourse worker` as systemd services against an external PostgreSQL instance.
+  </Card>
+</CardGroup>
+
+## Generating keys
+
+Every Concourse deployment requires three key files. Generate them once and keep them safe — re-generating any of them will invalidate existing worker registrations or user sessions.
+
+```bash
+mkdir -p keys/web keys/worker
+
+# RSA key used to sign user session tokens
+concourse generate-key -t rsa -f keys/web/session_signing_key
+
+# SSH host key advertised by the TSA (workers verify this)
+concourse generate-key -t ssh -f keys/web/tsa_host_key
+
+# SSH key the worker uses to authenticate with the TSA
+concourse generate-key -t ssh -f keys/worker/worker_key
+
+# Authorize the worker's public key on the web node
+cat keys/worker/worker_key.pub >> keys/web/authorized_worker_keys
+```
+
+<Tip>
+  The `concourse generate-key` command writes a PEM private key and a `.pub` companion file. The `.pub` file is what you share between components — never the private key.
+</Tip>
+
+## Docker Compose quickstart
+
+The repository ships a `docker-compose.yml` that starts three services — `db`, `web`, and `worker` — pre-wired together. It is the fastest way to get a working cluster and closely mirrors what a production deployment looks like.
+
+```yaml
+networks:
+  default:
+    enable_ipv6: true
+    ipam:
+      driver: default
+      config:
+        - subnet: fdf1:f4a2:d53::/64
+          gateway: fdf1:f4a2:d53::ffff
+services:
+  db:
+    image: postgres:${POSTGRES_TAG:-latest}
+    shm_size: 1gb
+    ports: [6543:5432]
+    environment:
+      POSTGRES_DB: concourse
+      POSTGRES_USER: dev
+      POSTGRES_PASSWORD: dev
+      POSTGRES_HOST_AUTH_METHOD: ${AUTH_METHOD:-trust}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dev -d concourse"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+
+  web:
+    build: .
+    image: concourse/concourse:local
+    command: web
+    depends_on:
+      db:
+        condition: service_healthy
+    ports: [8080:8080]
+    volumes:
+      - .:/src
+      - "./hack/keys:/concourse-keys"
+    environment:
+      CONCOURSE_SESSION_SIGNING_KEY: /concourse-keys/session_signing_key
+      CONCOURSE_TSA_AUTHORIZED_KEYS: /concourse-keys/authorized_worker_keys
+      CONCOURSE_TSA_HOST_KEY: /concourse-keys/tsa_host_key
+
+      CONCOURSE_LOG_LEVEL: debug
+      CONCOURSE_POSTGRES_HOST: db
+      CONCOURSE_POSTGRES_USER: dev
+      CONCOURSE_POSTGRES_PASSWORD: dev
+      CONCOURSE_POSTGRES_DATABASE: concourse
+      CONCOURSE_EXTERNAL_URL: http://localhost:8080
+      CONCOURSE_ADD_LOCAL_USER: test:test,guest:guest
+      CONCOURSE_MAIN_TEAM_LOCAL_USER: test
+      CONCOURSE_CLUSTER_NAME: dev
+      CONCOURSE_ENABLE_CACHE_STREAMED_VOLUMES: "true"
+      CONCOURSE_ENABLE_RESOURCE_CAUSALITY: "true"
+
+  worker:
+    build: .
+    image: concourse/concourse:local
+    command: worker
+    privileged: true
+    cgroup: host
+    depends_on: [web]
+    ports:
+      - 7777:7777
+      - 7788:7788
+    volumes: ["./hack/keys:/concourse-keys"]
+    stop_signal: SIGUSR2
+    environment:
+      CONCOURSE_RUNTIME: containerd
+
+      CONCOURSE_TSA_PUBLIC_KEY: /concourse-keys/tsa_host_key.pub
+      CONCOURSE_TSA_WORKER_PRIVATE_KEY: /concourse-keys/worker_key
+
+      CONCOURSE_LOG_LEVEL: debug
+      CONCOURSE_TSA_HOST: web:2222
+
+      CONCOURSE_BIND_IP: 0.0.0.0
+      CONCOURSE_BAGGAGECLAIM_BIND_IP: 0.0.0.0
+
+      CONCOURSE_BAGGAGECLAIM_DRIVER: overlay
+      CONCOURSE_CONTAINERD_DNS_PROXY_ENABLE: "true"
+```
+
+<Note>
+  The worker container must run as `privileged: true` with `cgroup: host` because it manages Linux namespaces and cgroups for build containers. This is expected — it is not a security misconfiguration.
+</Note>
+
+### Key environment variables
+
+| Variable | Description |
+|---|---|
+| `CONCOURSE_EXTERNAL_URL` | Public URL of the web node, used in redirect URIs and the UI |
+| `CONCOURSE_ADD_LOCAL_USER` | Comma-separated `username:password` pairs for local auth |
+| `CONCOURSE_MAIN_TEAM_LOCAL_USER` | Which local users belong to the `main` (admin) team |
+| `CONCOURSE_POSTGRES_HOST` | PostgreSQL hostname |
+| `CONCOURSE_POSTGRES_USER` | PostgreSQL username |
+| `CONCOURSE_POSTGRES_PASSWORD` | PostgreSQL password |
+| `CONCOURSE_POSTGRES_DATABASE` | PostgreSQL database name |
+| `CONCOURSE_SESSION_SIGNING_KEY` | Path to RSA key for signing user sessions |
+| `CONCOURSE_TSA_HOST_KEY` | Path to SSH private key for the TSA |
+| `CONCOURSE_TSA_AUTHORIZED_KEYS` | Path to authorized_keys file listing trusted worker public keys |
+
+## Starting the web node manually
+
+<Steps>
+  <Step title="Ensure PostgreSQL is running">
+    Concourse requires PostgreSQL 11 or later. Create a database and user before starting the web node.
+
+    ```sql
+    CREATE USER concourse WITH PASSWORD 'secret';
+    CREATE DATABASE concourse OWNER concourse;
+    ```
+  </Step>
+
+  <Step title="Start the web node">
+    Run `concourse web` with the required flags. Every `--flag` can also be provided as a `CONCOURSE_` environment variable (upper-cased, dashes replaced with underscores).
+
+    ```bash
+    concourse web \
+      --external-url https://ci.example.com \
+      --add-local-user admin:password \
+      --main-team-local-user admin \
+      --postgres-host localhost \
+      --postgres-user concourse \
+      --postgres-password secret \
+      --session-signing-key keys/web/session_signing_key \
+      --tsa-host-key keys/web/tsa_host_key \
+      --tsa-authorized-keys keys/web/authorized_worker_keys
+    ```
+  </Step>
+
+  <Step title="Start at least one worker">
+    See the [Workers](/operations/workers) page for the full `concourse worker` command and lifecycle management.
+  </Step>
+</Steps>
+
+<Tip>
+  Every CLI flag maps directly to an environment variable. For example, `--postgres-host` becomes `CONCOURSE_POSTGRES_HOST`. This makes it easy to configure Concourse entirely from environment variables in container orchestrators.
+</Tip>
+
+## Database migrations
+
+The `migrate` sub-command applies schema migrations to the Concourse database. Run it before upgrading the `web` node to a new version.
+
+```bash
+concourse migrate \
+  --postgres-host localhost \
+  --postgres-user concourse \
+  --postgres-password secret \
+  --postgres-database concourse
+```
+
+<Warning>
+  Always back up your PostgreSQL database before running migrations. Once a migration is applied it cannot be automatically rolled back by downgrading the binary.
+</Warning>
+
+## Single-node quickstart
+
+For throwaway environments or CI-within-CI, the `quickstart` sub-command starts both a web node and a worker in one process, auto-wired together — no keys or separate worker registration needed.
+
+```bash
+concourse quickstart \
+  --add-local-user admin:password \
+  --main-team-local-user admin \
+  --postgres-host localhost \
+  --postgres-user concourse \
+  --postgres-password secret \
+  --external-url http://localhost:8080
+```
+
+<Warning>
+  `concourse quickstart` is explicitly **not recommended for production**. It runs the worker as the same process as the web node, so a worker crash will take down the whole cluster.
+</Warning>

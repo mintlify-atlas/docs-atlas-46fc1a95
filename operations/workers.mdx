@@ -1,0 +1,219 @@
+---
+title: "Managing Concourse workers: registration, scaling, and lifecycle"
+sidebarTitle: Workers
+description: "Run and manage Concourse worker processes: TSA registration, containerd and guardian runtimes, worker tags, team scoping, and graceful lifecycle drain."
+---
+
+Workers are the machines that actually execute your builds. Each worker is a stateless process that connects outward to the web node's TSA gateway (port 2222) over SSH, registers itself, and then receives task assignments. Because workers dial in rather than being dialed into, they do not need to be publicly reachable — a firewall-behind worker in a private network works exactly the same as one sitting next to the web node. Containers are managed by the `containerd` runtime by default; the older `guardian` (Garden/runc) runtime is also available on `linux/amd64`.
+
+## Starting a worker
+
+<Steps>
+  <Step title="Ensure keys are in place">
+    The worker needs its own private key (`worker_key`) and the TSA's public key (`tsa_host_key.pub`) to establish a trusted SSH session. Both are generated during [key generation](/operations/deployment#generating-keys).
+
+    ```
+    keys/
+    ├── web/
+    │   ├── tsa_host_key.pub   ← copy to worker
+    └── worker/
+        └── worker_key         ← worker's private key
+    ```
+  </Step>
+
+  <Step title="Run concourse worker">
+    ```bash
+    concourse worker \
+      --work-dir /tmp/concourse-worker \
+      --tsa-host ci.example.com:2222 \
+      --tsa-public-key keys/web/tsa_host_key.pub \
+      --tsa-worker-private-key keys/worker/worker_key
+    ```
+
+    The worker will start the containerd daemon, the baggageclaim volume manager, and the Garden API server, then open an SSH session to the TSA and heartbeat its presence every 30 seconds.
+  </Step>
+</Steps>
+
+## Key worker flags
+
+| Flag | Env var | Default | Description |
+|---|---|---|---|
+| `--work-dir` | `CONCOURSE_WORK_DIR` | *(required)* | Directory for container data and volumes |
+| `--tsa-host` | `CONCOURSE_TSA_HOST` | `127.0.0.1:2222` | TSA address (`host:port`). Can be specified multiple times for HA |
+| `--tsa-public-key` | `CONCOURSE_TSA_PUBLIC_KEY` | — | File containing the TSA's public key to verify |
+| `--tsa-worker-private-key` | `CONCOURSE_TSA_WORKER_PRIVATE_KEY` | *(required)* | Worker's SSH private key |
+| `--runtime` | `CONCOURSE_RUNTIME` | `containerd` | Container runtime: `containerd`, `guardian`, or `houdini` |
+| `--tag` | `CONCOURSE_TAG` | — | Tag(s) to advertise; pipelines can target specific tags |
+| `--team` | `CONCOURSE_TEAM` | — | Restrict this worker to a single team |
+| `--name` | `CONCOURSE_NAME` | *(hostname)* | Worker name shown in `fly workers` |
+| `--ephemeral` | `CONCOURSE_EPHEMERAL` | `false` | Auto-prune the worker from the pool when it disconnects |
+| `--bind-ip` | `CONCOURSE_BIND_IP` | `127.0.0.1` | IP for the Garden API server (use `0.0.0.0` for Docker networking) |
+| `--baggageclaim-bind-ip` | `CONCOURSE_BAGGAGECLAIM_BIND_IP` | `127.0.0.1` | IP for the Baggageclaim volume server |
+| `--rebalance-interval` | `CONCOURSE_REBALANCE_INTERVAL` | `4h` | How often to rotate to a random TSA for load balancing |
+| `--sweep-interval` | `CONCOURSE_SWEEP_INTERVAL` | `30s` | Interval for GC of orphaned containers and volumes |
+
+<Note>
+  Like all Concourse flags, every `--flag` can be set as a `CONCOURSE_` environment variable. For example, `--work-dir /data` becomes `CONCOURSE_WORK_DIR=/data`.
+</Note>
+
+## Container runtimes
+
+<Tabs>
+  <Tab title="containerd (default)">
+    The recommended runtime on Linux. Concourse embeds and manages its own `containerd` daemon — you do not need to install it separately.
+
+    ```bash
+    concourse worker \
+      --runtime containerd \
+      --work-dir /data/concourse \
+      --tsa-host ci.example.com:2222 \
+      --tsa-public-key keys/web/tsa_host_key.pub \
+      --tsa-worker-private-key keys/worker/worker_key
+    ```
+
+    Relevant containerd sub-flags (all under `--containerd-*` / `CONCOURSE_CONTAINERD_*`):
+
+    | Flag | Default | Description |
+    |---|---|---|
+    | `--containerd-max-containers` | `250` | Max concurrent containers |
+    | `--containerd-dns-proxy-enable` | `false` | Enable built-in DNS proxy (useful in Docker networking) |
+    | `--containerd-privileged-mode` | `full` | Privilege level for privileged containers: `full`, `fuse-only`, or `ignore` |
+  </Tab>
+  <Tab title="guardian (runc)">
+    The original Garden/runc-based runtime. Available on `linux/amd64` only. Use `--runtime guardian` to enable it.
+
+    ```bash
+    concourse worker \
+      --runtime guardian \
+      --work-dir /data/concourse \
+      --tsa-host ci.example.com:2222 \
+      --tsa-public-key keys/web/tsa_host_key.pub \
+      --tsa-worker-private-key keys/worker/worker_key
+    ```
+
+    Guardian sub-flags use the `--garden-*` namespace (for historical reasons) and the `CONCOURSE_GARDEN_*` env vars.
+  </Tab>
+  <Tab title="houdini (no containers)">
+    Houdini runs tasks directly on the host without containers. **It is insecure and does not isolate builds.** Only use it for experimentation on throw-away machines.
+
+    ```bash
+    concourse worker \
+      --runtime houdini \
+      --work-dir /tmp/concourse \
+      --tsa-host ci.example.com:2222 \
+      --tsa-public-key keys/web/tsa_host_key.pub \
+      --tsa-worker-private-key keys/worker/worker_key
+    ```
+  </Tab>
+</Tabs>
+
+## Tagging and team-scoping workers
+
+Workers can be tagged so that individual jobs or tasks explicitly request them. This is useful for specialised hardware (GPU, macOS, ARM) or compliance requirements.
+
+```bash
+# Worker that advertises a "gpu" tag
+concourse worker \
+  --tag gpu \
+  --work-dir /data/concourse \
+  --tsa-host ci.example.com:2222 \
+  --tsa-public-key keys/web/tsa_host_key.pub \
+  --tsa-worker-private-key keys/worker/worker_key
+```
+
+In a pipeline, target that worker with `tags: [gpu]` on a task or resource.
+
+To restrict a worker so it only runs jobs belonging to a particular team, pass `--team`:
+
+```bash
+concourse worker \
+  --team myteam \
+  --work-dir /data/concourse \
+  --tsa-host ci.example.com:2222 \
+  --tsa-public-key keys/web/tsa_host_key.pub \
+  --tsa-worker-private-key keys/worker/worker_key
+```
+
+## TSA reverse tunnel (remote workers)
+
+Workers behind a NAT or firewall that cannot be reached directly by the web node can register via an SSH reverse tunnel. The worker opens the SSH connection, which the TSA proxies back to the ATC.
+
+```bash
+ssh -p 2222 ci.example.com \
+  -i worker_key \
+  -o UserKnownHostsFile=tsa_host_key.pub \
+  -R 0.0.0.0:7777:127.0.0.1:7777 \
+  -R 0.0.0.0:7788:127.0.0.1:7788 \
+  forward-worker \
+    --garden 0.0.0.0:7777 \
+    --baggageclaim 0.0.0.0:7788 \
+  < worker.json
+```
+
+The `worker.json` payload describes the worker to the TSA:
+
+```json
+{
+  "platform": "linux",
+  "tags": []
+}
+```
+
+<Note>
+  When using the reverse tunnel, Garden and Baggageclaim should bind to `127.0.0.1` so they are **not** exposed on the public internet. The tunnel itself carries all traffic between the ATC and the worker.
+</Note>
+
+## Worker lifecycle management
+
+Workers move through a set of lifecycle states. Understanding these states is important for zero-downtime maintenance.
+
+```
+registering  →  running  →  landing  →  landed  →  retiring  →  (gone)
+                               ↑
+                          SIGUSR2 / fly land-worker
+```
+
+### Managing workers with fly
+
+```bash
+# List all registered workers and their states
+fly -t ci workers
+
+# Gracefully drain a worker: finish current builds, then stop
+# Equivalent to sending SIGUSR2 to the worker process
+fly -t ci land-worker -w worker-name
+
+# Permanently remove a worker from the pool (no more builds scheduled)
+fly -t ci retire-worker -w worker-name
+
+# Force-remove a stalled or unresponsive worker entry from the ATC
+fly -t ci prune-worker -w worker-name
+```
+
+### Signals
+
+| Signal | Effect |
+|---|---|
+| `SIGUSR2` | Graceful drain — worker finishes in-flight builds, then exits. This is the `stop_signal` set in the Docker Compose file. |
+| `SIGTERM` | Immediate shutdown — in-flight builds are interrupted. |
+
+<Warning>
+  Sending `SIGTERM` to a worker while builds are running will cause those builds to error. Always prefer `SIGUSR2` (or `fly land-worker`) for planned maintenance.
+</Warning>
+
+## Ephemeral workers
+
+Mark a worker `--ephemeral` when it should be automatically pruned from the pool the moment it disconnects — useful for spot instances or autoscaled fleets where workers come and go frequently.
+
+```bash
+concourse worker \
+  --ephemeral \
+  --work-dir /data/concourse \
+  --tsa-host ci.example.com:2222 \
+  --tsa-public-key keys/web/tsa_host_key.pub \
+  --tsa-worker-private-key keys/worker/worker_key
+```
+
+<Tip>
+  Combine `--ephemeral` with `--rebalance-interval` to ensure that short-lived workers spread load evenly across multiple TSA hosts in an HA web-node setup.
+</Tip>

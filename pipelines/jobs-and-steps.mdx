@@ -1,0 +1,365 @@
+---
+title: "Jobs and build plans in Concourse pipelines"
+sidebarTitle: "Jobs & Steps"
+description: "JobConfig fields and every build-plan step type: get, put, task, set_pipeline, do, in_parallel, try, across, timeout, attempts, and lifecycle hooks."
+---
+
+A Concourse job is the unit of work in a pipeline. Each job owns a **build plan** — an ordered sequence of steps that execute inside containers on a worker. Jobs are triggered automatically when new resource versions arrive, or manually via the UI or `fly`. Concourse runs each build in a fresh environment, guaranteeing full isolation between builds.
+
+## `JobConfig` fields
+
+Every entry in the `jobs` list maps to the `JobConfig` struct in [`atc/job_config.go`](https://github.com/concourse/concourse/blob/master/atc/job_config.go).
+
+<ParamField path="name" type="string" required>
+  Unique identifier for the job within the pipeline. Referenced by `passed`
+  constraints on `get` steps and by group membership lists.
+</ParamField>
+
+<ParamField path="plan" type="[]Step" required>
+  The ordered list of steps that make up the build plan. At least one step is
+  required.
+</ParamField>
+
+<ParamField path="old_name" type="string">
+  When renaming a job, set `old_name` to the previous name. Concourse migrates
+  build history from the old job to the new one on the next `set-pipeline`.
+  Remove `old_name` once the rename is stable.
+</ParamField>
+
+<ParamField path="public" type="boolean" default="false">
+  Expose build logs and output to unauthenticated users. Useful for open-source
+  projects where you want public CI visibility.
+</ParamField>
+
+<ParamField path="serial" type="boolean" default="false">
+  Allow at most one build to run at a time. New builds queue behind the current
+  one rather than running in parallel. Equivalent to `max_in_flight: 1`.
+</ParamField>
+
+<ParamField path="serial_groups" type="[]string">
+  Share a serial lock with other jobs. Jobs that share a serial group name will
+  never run simultaneously, even across different jobs. Useful for coordinating
+  deploy jobs that target the same environment.
+</ParamField>
+
+<ParamField path="max_in_flight" type="integer">
+  Cap the number of concurrent builds. `0` means unlimited. Overridden by
+  `serial: true` (which sets the effective limit to `1`).
+</ParamField>
+
+<ParamField path="build_log_retention" type="object">
+  Control how many build logs Concourse retains for this job.
+
+  ```yaml
+  build_log_retention:
+    builds: 50                   # keep the last 50 builds
+    days: 30                     # …but never older than 30 days
+    minimum_succeeded_builds: 5  # always keep at least 5 passing builds
+  ```
+</ParamField>
+
+<ParamField path="build_logs_to_retain" type="integer">
+  Deprecated alias for `build_log_retention.builds`. Use `build_log_retention`
+  for new pipelines.
+</ParamField>
+
+<ParamField path="interruptible" type="boolean" default="false">
+  When `true`, a running build is automatically aborted if a newer build of the
+  same job is triggered. Useful for short-lived feature branches where you only
+  care about the most recent result.
+</ParamField>
+
+<ParamField path="disable_manual_trigger" type="boolean" default="false">
+  Prevent users from manually triggering builds via the UI or `fly trigger-job`.
+  The job can still be triggered automatically by resource versions.
+</ParamField>
+
+<ParamField path="disable_reruns" type="boolean" default="false">
+  Prevent users from re-running completed builds via the UI or API.
+</ParamField>
+
+<ParamField path="tags" type="[]string">
+  Run this job's builds on workers that have all the specified tags. Useful for
+  targeting specific infrastructure (e.g. GPU workers, air-gapped networks).
+</ParamField>
+
+<ParamField path="on_success" type="Step">
+  A step (or sequence of steps) to run if the build plan succeeds.
+</ParamField>
+
+<ParamField path="on_failure" type="Step">
+  A step (or sequence of steps) to run if the build plan fails.
+</ParamField>
+
+<ParamField path="on_error" type="Step">
+  A step (or sequence of steps) to run if the build plan errors (infrastructure
+  or unexpected failure, distinct from a failing test).
+</ParamField>
+
+<ParamField path="on_abort" type="Step">
+  A step (or sequence of steps) to run if the build is manually aborted.
+</ParamField>
+
+<ParamField path="ensure" type="Step">
+  A step that always runs at the end of the build plan, regardless of success,
+  failure, error, or abort. Analogous to `finally` in most languages.
+</ParamField>
+
+## Job configuration example
+
+```yaml
+jobs:
+  - name: test-and-deploy
+    serial: true
+    public: true
+    interruptible: true
+    build_log_retention:
+      builds: 30
+      minimum_succeeded_builds: 3
+    plan:
+      - get: my-repo
+        trigger: true
+      - task: run-tests
+        file: my-repo/ci/tasks/test.yml
+      - put: staging-deploy
+        params:
+          manifest: my-repo/manifest.yml
+    on_failure:
+      put: notify-slack
+      params:
+        text: "Build failed: $BUILD_PIPELINE_NAME/$BUILD_JOB_NAME #$BUILD_NAME"
+    ensure:
+      task: cleanup-workspace
+      file: my-repo/ci/tasks/cleanup.yml
+```
+
+## Triggering jobs
+
+Jobs are triggered automatically when a `get` step has `trigger: true` and a new version of the referenced resource is detected.
+
+```yaml
+plan:
+  - get: my-repo
+    trigger: true        # new commits → new build
+  - get: base-image
+    trigger: false       # updated image does NOT trigger; just fetches latest
+    passed: [build-base] # only use versions that passed the build-base job
+```
+
+<Note>
+  A job with no `get trigger: true` steps will only run when manually triggered
+  or when another job propagates a version to it via `passed:`.
+</Note>
+
+## Serial groups across jobs
+
+`serial_groups` lets you share a mutex across multiple jobs that must not run at the same time — for example, two deploy jobs targeting the same Kubernetes cluster:
+
+```yaml
+jobs:
+  - name: deploy-staging
+    serial_groups: [k8s-cluster]
+    plan:
+      - get: app-image
+        trigger: true
+      - task: deploy
+        file: ci/tasks/deploy-staging.yml
+
+  - name: deploy-production
+    serial_groups: [k8s-cluster]
+    plan:
+      - get: app-image
+        passed: [deploy-staging]
+      - task: deploy
+        file: ci/tasks/deploy-prod.yml
+```
+
+`deploy-staging` and `deploy-production` will never execute simultaneously, even though they are separate jobs.
+
+## Step types
+
+A build plan is a list of **steps**. Concourse defines step types in [`atc/steps.go`](https://github.com/concourse/concourse/blob/master/atc/steps.go) via the `StepPrecedence` list. Step modifiers are evaluated before core step types.
+
+<Tabs>
+  <Tab title="Core steps">
+    <CardGroup cols={2}>
+      <Card title="get" icon="download">
+        Fetch a version of a resource onto the worker. The fetched directory is
+        available to subsequent steps by the step name.
+
+        ```yaml
+        - get: my-repo
+          trigger: true
+          passed: [lint]
+          version: latest
+        ```
+      </Card>
+      <Card title="put" icon="upload">
+        Push a new version to a resource (e.g. push a Docker image, publish a
+        GitHub release). After a successful put, Concourse implicitly runs a
+        `get` to fetch the resulting version.
+
+        ```yaml
+        - put: app-image
+          params:
+            image: built-image/image.tar
+        ```
+      </Card>
+      <Card title="task" icon="terminal">
+        Run a script inside an ephemeral container. Task configuration is either
+        inline or loaded from a file in a fetched resource.
+
+        ```yaml
+        - task: unit-tests
+          file: my-repo/ci/tasks/test.yml
+          vars:
+            go_version: "1.21"
+        ```
+      </Card>
+      <Card title="run" icon="bolt">
+        Run a prototype-based step. Executes a message-based command in a
+        container, used with the experimental prototype protocol.
+
+        ```yaml
+        - run: my-prototype-step
+          type: my-prototype
+        ```
+      </Card>
+      <Card title="set_pipeline" icon="gear">
+        Update or create a pipeline from within a build. Enables
+        self-updating pipelines or dynamically generated child pipelines.
+
+        ```yaml
+        - set_pipeline: self
+          file: ci/pipeline.yml
+          vars:
+            environment: staging
+        ```
+      </Card>
+      <Card title="load_var" icon="key">
+        Load a YAML or JSON file from a fetched resource into a build-local
+        variable scope, making its values available via `((var))` interpolation.
+
+        ```yaml
+        - load_var: version-info
+          file: version/version.json
+          reveal: true
+        ```
+      </Card>
+    </CardGroup>
+  </Tab>
+  <Tab title="Flow control">
+    <CardGroup cols={2}>
+      <Card title="do" icon="list">
+        Group a list of steps into a single logical unit. Useful when step
+        modifiers need to wrap several steps at once.
+
+        ```yaml
+        - do:
+          - get: source
+          - task: build
+          - put: artifact
+          on_failure:
+            put: notify
+        ```
+      </Card>
+      <Card title="in_parallel" icon="shuffle">
+        Execute a list of steps concurrently. By default all steps must succeed.
+        `fail_fast: true` aborts sibling steps on the first failure.
+
+        ```yaml
+        - in_parallel:
+            fail_fast: true
+            steps:
+              - task: lint
+                file: ci/tasks/lint.yml
+              - task: test
+                file: ci/tasks/test.yml
+        ```
+      </Card>
+      <Card title="try" icon="shield">
+        Run a step but ignore failures — the build continues regardless of
+        outcome. Useful for optional notification steps.
+
+        ```yaml
+        - try:
+            put: flaky-notifier
+            params:
+              text: "build started"
+        ```
+      </Card>
+    </CardGroup>
+  </Tab>
+  <Tab title="Modifiers">
+    <CardGroup cols={2}>
+      <Card title="timeout" icon="clock">
+        Abort a step if it takes longer than the specified duration.
+
+        ```yaml
+        - task: integration-tests
+          file: ci/tasks/integration.yml
+          timeout: 20m
+        ```
+      </Card>
+      <Card title="attempts" icon="refresh">
+        Retry a step up to N times on failure. The build fails only if all
+        attempts fail.
+
+        ```yaml
+        - put: flaky-registry
+          params:
+            image: built-image/image.tar
+          attempts: 3
+        ```
+      </Card>
+      <Card title="across" icon="grid">
+        Run a step for each combination of values in one or more variable
+        axes — a matrix build primitive.
+
+        ```yaml
+        - across:
+          - var: go_version
+            values: ["1.20", "1.21"]
+          - var: os
+            values: [linux, windows]
+          task: test
+          file: ci/tasks/test.yml
+        ```
+      </Card>
+      <Card title="on_success / on_failure / on_error / on_abort / ensure" icon="bell">
+        Hook steps that run based on the outcome of the preceding step. Mirror
+        the job-level hooks but scoped to a single step.
+
+        ```yaml
+        - task: deploy
+          file: ci/tasks/deploy.yml
+          on_failure:
+            put: alert
+            params:
+              text: "deploy failed"
+          ensure:
+            task: teardown
+            file: ci/tasks/teardown.yml
+        ```
+      </Card>
+    </CardGroup>
+  </Tab>
+</Tabs>
+
+## Job-level hooks vs step-level hooks
+
+Both jobs and individual steps support `on_success`, `on_failure`, `on_error`, `on_abort`, and `ensure` hooks. The semantics are identical — they differ only in scope.
+
+| Hook | Triggers when… |
+|---|---|
+| `on_success` | The plan/step exits successfully (exit code 0) |
+| `on_failure` | A task exits with a non-zero exit code |
+| `on_error` | An infrastructure or Concourse-level error occurs |
+| `on_abort` | The build or step is manually aborted |
+| `ensure` | Always — success, failure, error, or abort |
+
+<Warning>
+  `on_failure` and `on_error` are distinct. A task that exits with code 1 is a
+  **failure**; a worker crashing mid-task is an **error**. Make sure your
+  notification hooks handle both if you need complete coverage.
+</Warning>

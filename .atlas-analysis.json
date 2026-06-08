@@ -1,0 +1,119 @@
+{
+  "projectType": "infrastructure",
+  "projectName": "Concourse CI",
+  "projectDescription": "Concourse is an open-source, container-based continuous integration and delivery system that uses declarative YAML pipelines, stateless workers, and a pluggable resource model to automate any kind of build, test, or deployment workflow.",
+  "theme": "aspen",
+  "primaryColor": "#369bdb",
+  "lightColor": "#8ad6ec",
+  "darkColor": "#ffffff",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "core-concepts"
+            ]
+          },
+          {
+            "group": "Pipelines",
+            "pages": [
+              "pipelines/overview",
+              "pipelines/resources",
+              "pipelines/jobs-and-steps",
+              "pipelines/pipeline-groups"
+            ]
+          },
+          {
+            "group": "Steps",
+            "pages": [
+              "steps/get",
+              "steps/put",
+              "steps/task",
+              "steps/set-pipeline",
+              "steps/step-modifiers"
+            ]
+          },
+          {
+            "group": "Credentials & Vars",
+            "pages": [
+              "credentials/overview",
+              "credentials/vault",
+              "credentials/aws-ssm",
+              "credentials/credhub"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "operations/deployment",
+              "operations/workers",
+              "operations/teams-and-auth",
+              "operations/feature-flags"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "fly CLI",
+        "groups": [
+          {
+            "group": "fly Reference",
+            "pages": [
+              "fly/overview",
+              "fly/login-targets",
+              "fly/pipeline-commands",
+              "fly/build-commands",
+              "fly/resource-commands",
+              "fly/worker-commands",
+              "fly/team-commands"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Declarative YAML pipeline configuration with no GUI-based pipeline editing",
+    "Container-based task isolation using containerd/runc for reproducible builds",
+    "Pluggable resource model — any versioned artifact (git, s3, docker, etc.) is a resource",
+    "Stateless, scalable workers that can be dynamically added or removed",
+    "Multiple credential backends: HashiCorp Vault, AWS SSM, AWS Secrets Manager, CredHub, Kubernetes Secrets",
+    "Teams with RBAC for multi-tenant isolation within a single Concourse deployment",
+    "TSA (SSH-based) secure worker registration supporting reverse-tunnel workers",
+    "fly CLI with 70+ subcommands for full pipeline and build lifecycle management",
+    "Built-in OIDC/OAuth2 identity via Skymarshal (Dex-backed) for SSO integrations",
+    "Resource causality tracking for upstream/downstream version tracing"
+  ],
+  "publicApiSurface": [
+    "concourse web — start the ATC + TSA web node",
+    "concourse worker — start a container-executing worker node",
+    "concourse quickstart — single-node all-in-one startup",
+    "concourse generate-key — generate RSA/SSH keys for deployment",
+    "concourse migrate — run database migrations",
+    "fly login / logout — authenticate to a Concourse target",
+    "fly set-pipeline / get-pipeline / destroy-pipeline / validate-pipeline / format-pipeline",
+    "fly trigger-job / pause-job / unpause-job / schedule-job / abort-build",
+    "fly watch / builds / rerun-build",
+    "fly check-resource / check-resource-type / resources / resource-versions",
+    "fly pin-resource / unpin-resource / enable-resource-version / disable-resource-version",
+    "fly set-team / get-team / destroy-team / teams",
+    "fly workers / land-worker / retire-worker / prune-worker",
+    "fly hijack — attach to a running build container",
+    "fly execute — run a local task in Concourse",
+    "fly volumes / containers",
+    "fly sync — update fly to match server version",
+    "GET /api/v1/info — server version and feature info",
+    "GET/POST /api/v1/builds — list and create builds",
+    "GET/POST /api/v1/teams/:team_name/pipelines — manage pipelines",
+    "GET/POST /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs — manage jobs",
+    "GET/POST /api/v1/teams/:team_name/pipelines/:pipeline_name/resources — manage resources",
+    "POST /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/check — trigger resource check",
+    "GET /api/v1/workers — list registered workers",
+    "go-concourse/concourse — official Go client SDK for the ATC API"
+  ]
+}

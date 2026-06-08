@@ -1,0 +1,288 @@
+---
+title: "Concourse core concepts: pipelines, resources, and jobs"
+sidebarTitle: "Core Concepts"
+description: "Learn the mental model behind Concourse: pipelines, resources, resource types, jobs, tasks, builds, workers, teams, fly, ATC, and TSA explained."
+---
+
+Concourse is built around a small number of composable primitives. Once you understand how they fit together — pipelines declare intent, resources track versions of external things, jobs execute steps against those versions, and tasks run scripts inside containers — you can reason about any pipeline you encounter, no matter how complex. This page explains each primitive in depth.
+
+---
+
+## Pipeline
+
+A **pipeline** is the top-level configuration object in Concourse. It is a self-contained YAML document that declares all of the resources the pipeline watches and all of the jobs it can run. Pipelines are **declarative** — they describe *what* should happen and *when*, not *how* to implement the automation infrastructure. There is no GUI editor; the only way to create or update a pipeline is to provide a YAML file via `fly set-pipeline`.
+
+A pipeline belongs to exactly one **team** and has a unique name within that team. It is stored in the Concourse database (PostgreSQL) and can be paused, archived, exposed to the public, or deleted via the `fly` CLI or the ATC API.
+
+The top-level keys of a pipeline YAML (defined in `atc/config.go`) are:
+
+```yaml
+resources:       # versioned external artifacts the pipeline tracks
+resource_types:  # custom resource type definitions
+jobs:            # the units of work
+groups:          # optional visual groupings in the web UI
+var_sources:     # credential manager integrations
+display:         # optional background image / colour for the UI
+```
+
+<Note>
+  Pipelines start in a **paused** state after `fly set-pipeline` so you can review the diff before any jobs run automatically. Use `fly unpause-pipeline` (or the web UI toggle) to activate them.
+</Note>
+
+---
+
+## Resource
+
+A **resource** represents a versioned external artifact — something that exists *outside* of Concourse that the pipeline wants to track, consume, or produce. Common examples include a Git repository, an S3 bucket, a Docker image registry, or a time interval.
+
+Every resource has three key properties derived from the `ResourceConfig` struct in `atc/config.go`:
+
+| Property | Purpose |
+|---|---|
+| `name` | Unique identifier used to reference this resource in job steps |
+| `type` | The resource type plugin that implements check / get / put |
+| `source` | A map of configuration values passed to the plugin (e.g. repository URL, credentials) |
+| `check_every` | How frequently Concourse polls for new versions (default: `1m`) |
+
+Concourse continuously runs a **check** against each resource to discover new versions. When a new version appears — a new Git commit, a new image tag, a new S3 object — Concourse records it and uses it to determine whether downstream jobs should be triggered.
+
+```yaml
+resources:
+  - name: my-repo
+    type: git
+    source:
+      uri: https://github.com/example/my-repo.git
+      branch: main
+    check_every: 30s
+```
+
+Resources can be **inputs** to jobs (fetched with a `get` step) and **outputs** from jobs (pushed with a `put` step). A job that `get`s a resource with `trigger: true` will automatically run a new build whenever a new version of that resource appears.
+
+---
+
+## Resource Types
+
+A **resource type** is the plugin that backs a resource. It defines the three lifecycle operations: `check` (detect new versions), `in` / `get` (download a specific version), and `out` / `put` (produce a new version). Each resource type is itself a container image, which means community-authored resource types are distributed and consumed just like any other OCI image.
+
+Concourse ships with several built-in resource types:
+
+<Accordion title="Built-in resource types">
+
+| Type | Description |
+|---|---|
+| `git` | Tracks commits on a Git branch; clones the repository for builds |
+| `registry-image` | Checks, pulls, and pushes OCI images from container registries |
+| `s3` | Tracks, downloads, and uploads objects in Amazon S3 (or compatible stores) |
+| `semver` | Manages a version number stored in S3, Git, or GCS; supports bump strategies |
+| `time` | Emits a new version on a configurable interval or within a time range |
+| `github-release` | Tracks and downloads GitHub releases and their attached assets |
+
+</Accordion>
+
+You can define **custom resource types** directly inside your pipeline under the `resource_types` key. Concourse will pull the specified image and use it transparently:
+
+```yaml
+resource_types:
+  - name: slack-alert
+    type: registry-image
+    source:
+      repository: arbourd/concourse-slack-alert-resource
+
+resources:
+  - name: notify
+    type: slack-alert
+    source:
+      url: ((slack-webhook-url))
+```
+
+---
+
+## Job
+
+A **job** defines a unit of automation — a sequence of steps that Concourse executes on a worker whenever the job is triggered. Jobs are isolated by design: each build runs in a freshly provisioned environment with no access to the state of previous builds.
+
+The `plan` is an ordered list of steps. Steps can `get` resource versions (inputs), run `task` steps (arbitrary scripts), `put` resources (outputs), run other jobs with `set_pipeline`, load variables with `load_var`, and more.
+
+```yaml
+jobs:
+  - name: build-and-test
+    plan:
+      - get: my-repo
+        trigger: true
+      - task: run-tests
+        config:
+          platform: linux
+          image_resource:
+            type: registry-image
+            source: { repository: golang, tag: "1.22" }
+          inputs:
+            - name: my-repo
+          run:
+            path: sh
+            args: ["-c", "cd my-repo && go test ./..."]
+```
+
+Jobs can be triggered in two ways:
+
+- **Automatically** — when a `get` step within the plan has `trigger: true` and a new resource version is available.
+- **Manually** — via `fly trigger-job`, the web UI, or the ATC API (`POST /api/v1/teams/:team/pipelines/:pipeline/jobs/:job/builds`).
+
+<Warning>
+  Jobs do **not** share a filesystem between builds. If two jobs need the same resource version, both must declare their own `get` step for it. Use `passed` constraints to chain jobs and guarantee they operate on the same version.
+</Warning>
+
+---
+
+## Task
+
+A **task** is the atomic unit of work inside a job plan. It runs a script inside a container image on a worker. Tasks are the only step type that actually executes arbitrary code — all other step types (`get`, `put`, `set_pipeline`, etc.) are thin wrappers around resource type operations managed by the ATC.
+
+Every task configuration specifies:
+
+- **`platform`** — `linux`, `windows`, or `darwin`.
+- **`image_resource`** — the container image to run the task in (pulled at build time).
+- **`run`** — the command path and arguments.
+- **`inputs`** / **`outputs`** — named directory mounts passed into or out of the container.
+
+Tasks can be defined **inline** inside the pipeline YAML (as shown above) or as a separate **task file** (a `.yml` file committed alongside your code and referenced with `file:` in the step). Task files keep complex task configurations out of the pipeline and allow them to be tested and versioned independently.
+
+```yaml
+# In your pipeline:
+- task: integration-test
+  file: my-repo/ci/tasks/integration-test.yml
+  params:
+    DATABASE_URL: ((db-url))
+```
+
+---
+
+## Build
+
+A **build** is a single numbered execution of a job. Every time a job is triggered — automatically or manually — Concourse creates a new build with an incrementing integer ID. Each build has:
+
+- A **status**: `pending`, `started`, `succeeded`, `failed`, `errored`, or `aborted`.
+- A **log stream** available in the web UI and via `fly watch`.
+- A record of all resource versions it consumed (inputs) and produced (outputs).
+
+Builds are immutable after completion. You can re-run a build using `fly rerun-build`, which creates a new build using the same pinned resource versions — making re-runs perfectly reproducible.
+
+---
+
+## Worker
+
+A **worker** is a machine running the `concourse worker` process alongside a container runtime. Concourse defaults to **containerd** (via the Guardian runtime) for container execution and **baggageclaim** for ephemeral volume management.
+
+Workers are **stateless** by design. They register with the ATC through the TSA SSH gateway, heartbeat periodically to remain active, and can be replaced or scaled horizontally at any time without cluster downtime. When a worker registers it advertises its platform (`linux`, `windows`, `darwin`), available tags, and current resource capacity.
+
+The `concourse worker` command exposes several lifecycle sub-commands:
+
+| Command | Effect |
+|---|---|
+| `concourse worker` | Start and register a worker |
+| `concourse land-worker` | Drain current builds and put the worker in a `landed` state for maintenance |
+| `concourse retire-worker` | Permanently remove a worker from the cluster |
+
+<Note>
+  Workers must run as root (or with `--privileged` in Docker) because container isolation requires Linux namespaces and cgroups. The Docker Compose example sets `privileged: true` on the `worker` service.
+</Note>
+
+---
+
+## Team
+
+A **team** is an isolation boundary within a Concourse cluster. Each team has its own:
+
+- Set of pipelines (not visible to other teams by default).
+- RBAC roles — `owner`, `member`, `pipeline-operator`, and `viewer`.
+- Secrets scope (credentials stored in an external vault are namespaced by team).
+- Authentication configuration (local users, GitHub org/team, OIDC groups, etc.).
+
+The `main` team (defined as `atc.DefaultTeamName` in the source) is created automatically and is the only team that can manage other teams and cluster-wide settings. `fly login` defaults to the `main` team unless you pass `-n <team-name>`.
+
+```bash
+# Log in to a non-default team
+fly -t staging login -c https://ci.example.com -n platform-team
+```
+
+---
+
+## fly CLI
+
+**`fly`** is the command-line interface for Concourse. It communicates with the ATC REST API and is the primary tool for every operator and developer workflow. Key commands include:
+
+<Accordion title="Essential fly commands">
+
+| Command | Description |
+|---|---|
+| `fly login` | Authenticate and save a named target to `~/.flyrc` |
+| `fly set-pipeline` | Upload or update a pipeline YAML on the server |
+| `fly unpause-pipeline` | Activate a paused pipeline |
+| `fly trigger-job` | Manually start a job build, optionally streaming its output with `--watch` |
+| `fly watch` | Stream the logs of a running or recent build |
+| `fly hijack` | Open an interactive shell inside a running (or recently finished) build container |
+| `fly validate-pipeline` | Lint a pipeline YAML without uploading it |
+| `fly sync` | Re-download the `fly` binary from the target server to stay in version sync |
+| `fly builds` | List recent builds across pipelines or for a specific job |
+| `fly set-team` | Create or update a team's authentication configuration |
+
+</Accordion>
+
+`fly` stores targets (URL + team + token) in `~/.flyrc`. You select a target for every command with the `-t` / `--target` flag. Running `fly targets` lists all saved targets and their versions.
+
+---
+
+## ATC — Air Traffic Controller
+
+The **ATC** is the Concourse server process, started with `concourse web`. It is the central brain of the cluster responsible for:
+
+- Serving the REST API at `/api/v1/` — every operation from setting pipelines to registering workers goes through this API.
+- Rendering the web UI.
+- Scheduling builds — determining which jobs are eligible to run based on resource versions and `passed` constraints.
+- Running periodic resource checks to discover new versions.
+- Managing all persistent state in PostgreSQL via a versioned schema (applied with `concourse migrate`).
+
+The ATC is horizontally scalable — multiple ATC instances can run behind a load balancer sharing the same PostgreSQL database.
+
+---
+
+## TSA — Token Security Authority
+
+The **TSA** is the SSH gateway embedded inside the `concourse web` process. It listens on port `2222` and is the only path through which workers join the cluster. Workers open a reverse SSH tunnel to the TSA and register themselves; the ATC then uses this established connection to forward work to the worker.
+
+This design means **workers never need an inbound firewall rule** — they only need outbound access to the TSA port. The TSA validates worker identity using public key cryptography, and the ATC validates TSA-forwarded registrations with an authorized-keys file.
+
+---
+
+## Putting it all together
+
+```
+Pipeline (YAML)
+  ├── resources        ← what to watch (Git, S3, images, …)
+  │     └── type       ← plugin image (git, registry-image, s3, …)
+  └── jobs             ← what to do
+        └── plan
+              ├── get  ← fetch a resource version (input)
+              ├── task ← run a script in a container (core work)
+              └── put  ← push a new resource version (output)
+```
+
+Every build is a fresh container on a stateless worker, consuming immutable resource versions, producing new ones, with all state tracked in PostgreSQL by the ATC. That is the entire Concourse mental model.
+
+---
+
+## Go deeper
+
+<CardGroup cols={2}>
+  <Card title="Pipelines" icon="diagram-project" href="/pipelines/overview">
+    Full pipeline schema reference — groups, var sources, display config, instanced pipelines, and more.
+  </Card>
+  <Card title="Task step" icon="circle-play" href="/steps/task">
+    Complete task configuration reference including inputs, outputs, caches, and container limits.
+  </Card>
+  <Card title="Credential Management" icon="key" href="/credentials/overview">
+    Integrate Vault, AWS SSM, Credhub, or Kubernetes secrets as var sources for pipeline credentials.
+  </Card>
+  <Card title="Workers" icon="server" href="/operations/workers">
+    Deploying, tagging, draining, and scaling workers in production Concourse clusters.
+  </Card>
+</CardGroup>

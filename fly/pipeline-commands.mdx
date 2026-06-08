@@ -1,0 +1,346 @@
+---
+title: "fly pipeline commands: set, get, pause, and manage pipelines"
+sidebarTitle: "Pipeline Commands"
+description: "Complete reference for fly CLI pipeline commands — set, get, validate, format, pause, expose, rename, archive, and destroy Concourse pipelines."
+---
+
+Pipeline management in Concourse is done entirely through `fly`, the CLI companion to every Concourse deployment. Pipelines are defined as YAML files, pushed to the server with `set-pipeline`, and then controlled through a suite of supporting commands that cover everything from pausing and exposing pipelines to validating config before it ever reaches the server.
+
+## fly set-pipeline (sp)
+
+`set-pipeline` (alias `sp`) uploads a pipeline configuration to Concourse and diffs the current config against the proposed changes before asking for confirmation. It is the primary way to create or update a pipeline.
+
+```bash
+fly -t ci set-pipeline -p my-app \
+  -c pipeline.yml \
+  -l vars/staging.yml \
+  -v image_tag=latest
+```
+
+<Accordion title="All set-pipeline flags">
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--pipeline` | `-p` | **(Required)** Pipeline name to create or update. Cannot contain `/`. |
+| `--config` | `-c` | **(Required)** Path to the pipeline YAML file. Use `-` to read from stdin. |
+| `--var` | `-v` | `KEY=VALUE` string variable override (repeatable). |
+| `--yaml-var` | `-y` | `KEY=VALUE` YAML-typed variable override (repeatable). |
+| `--load-vars-from` | `-l` | Path to a YAML file of variable values (repeatable). |
+| `--instance-var` | `-i` | `KEY=VALUE` for instanced pipelines (repeatable). |
+| `--non-interactive` | `-n` | Skip the confirmation prompt — apply changes immediately. |
+| `--check-creds` | | Validate all credential references against the configured credential manager. |
+| `--dry-run` | `-d` | Show the diff and validate without applying any changes. |
+| `--no-color` | | Disable ANSI color output in the diff. |
+| `--team` | | Apply to a different team than the target default. |
+
+</Accordion>
+
+<Tabs>
+  <Tab title="Basic usage">
+    ```bash
+    # Create or update a pipeline
+    fly -t ci set-pipeline -p my-app -c pipeline.yml
+
+    # Load variable overrides from a file and override one value inline
+    fly -t ci set-pipeline -p my-app \
+      -c pipeline.yml \
+      -l vars/staging.yml \
+      -v image_tag=v1.2.3
+
+    # Read pipeline config from stdin
+    cat pipeline.yml | fly -t ci set-pipeline -p my-app -c -
+    ```
+  </Tab>
+  <Tab title="Non-interactive / CI usage">
+    ```bash
+    # Skip the interactive confirmation prompt
+    fly -t ci set-pipeline -p my-app -c pipeline.yml --non-interactive
+
+    # Dry run — show the diff without applying
+    fly -t ci set-pipeline -p my-app -c pipeline.yml --dry-run
+
+    # Validate credentials are resolvable before applying
+    fly -t ci set-pipeline -p my-app -c pipeline.yml --check-creds
+    ```
+  </Tab>
+  <Tab title="Instanced pipelines">
+    ```bash
+    # Set an instanced pipeline (parameterised by instance variables)
+    fly -t ci set-pipeline -p my-app \
+      -c pipeline.yml \
+      -i branch=main \
+      -i env=staging
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+  Variable files supplied via `-l` are merged in order; later files and inline `-v` overrides take precedence over earlier ones. If the same key appears in multiple sources, the last value wins.
+</Note>
+
+<Warning>
+  Pipeline names cannot contain `/`. Instance variables are the correct way to namespace pipeline variants — use `-i` for that purpose.
+</Warning>
+
+---
+
+## fly get-pipeline
+
+`get-pipeline` fetches the currently applied pipeline configuration from the Concourse server and prints it to stdout as YAML (or JSON with `--json`). This reflects the server-side state after template interpolation.
+
+```bash
+# Print current config as YAML
+fly -t ci get-pipeline -p my-app
+
+# Print current config as JSON
+fly -t ci get-pipeline -p my-app --json
+
+# Save to a file
+fly -t ci get-pipeline -p my-app > pipeline-current.yml
+```
+
+<Accordion title="All get-pipeline flags">
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--pipeline` | `-p` | **(Required)** Pipeline to retrieve. |
+| `--json` | `-j` | Output as JSON instead of YAML. |
+| `--team` | | Read from a different team than the target default. |
+
+</Accordion>
+
+<Tip>
+  Pipe the output into a diff tool alongside your local file to see what has drifted: `diff <(fly -t ci get-pipeline -p my-app) pipeline.yml`.
+</Tip>
+
+---
+
+## fly validate-pipeline
+
+`validate-pipeline` parses and validates a pipeline YAML file **locally** without contacting the Concourse server. Use this in a CI pipeline itself to catch config errors before running `set-pipeline`.
+
+```bash
+# Validate a pipeline file
+fly -t ci validate-pipeline -c pipeline.yml
+
+# Fail on warnings as well as errors (strict mode)
+fly -t ci validate-pipeline -c pipeline.yml --strict
+
+# Print the fully interpolated pipeline to stdout after validation
+fly -t ci validate-pipeline -c pipeline.yml --output
+```
+
+<Accordion title="All validate-pipeline flags">
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--config` | `-c` | **(Required)** Pipeline configuration file to validate. |
+| `--strict` | `-s` | Treat warnings as errors and exit non-zero. |
+| `--output` | `-o` | Print the fully templated pipeline to stdout after validation. |
+| `--var` | `-v` | `KEY=VALUE` string variable override (repeatable). |
+| `--yaml-var` | `-y` | `KEY=VALUE` YAML-typed variable override (repeatable). |
+| `--load-vars-from` | `-l` | YAML file of variable values (repeatable). |
+
+</Accordion>
+
+<Note>
+  `validate-pipeline` runs entirely client-side — no Concourse target or authentication is required. It is safe to run in any environment, including offline.
+</Note>
+
+---
+
+## fly format-pipeline
+
+`format-pipeline` applies Concourse's opinionated YAML formatter to a pipeline file. It normalises key ordering and whitespace. By default it prints the result to stdout; pass `--write` to overwrite the file in place.
+
+```bash
+# Print formatted output to stdout
+fly format-pipeline -c pipeline.yml
+
+# Overwrite the file in place
+fly format-pipeline -c pipeline.yml --write
+```
+
+<Accordion title="All format-pipeline flags">
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--config` | `-c` | **(Required)** Pipeline configuration file to format. |
+| `--write` | `-w` | Overwrite the input file with the formatted output instead of printing. |
+
+</Accordion>
+
+<Tip>
+  Add `fly format-pipeline --write` as a pre-commit hook to keep pipeline files consistently formatted across your team.
+</Tip>
+
+---
+
+## fly pipelines (ps)
+
+`pipelines` (alias `ps`) lists all pipelines visible to the authenticated user on the target team, showing each pipeline's paused, public, and last-updated state.
+
+```bash
+# List pipelines for the default team
+fly -t ci pipelines
+
+# Include archived pipelines in the list
+fly -t ci pipelines --include-archived
+
+# Show all pipelines across every team (requires admin access)
+fly -t ci pipelines --all
+
+# Output as JSON
+fly -t ci pipelines --json
+```
+
+<Accordion title="All pipelines flags">
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--all` | `-a` | Show pipelines across all teams (admin-only). Cannot be combined with `--team`. |
+| `--include-archived` | | Include archived pipelines in the output. |
+| `--json` | | Print the result as JSON. |
+| `--team` | | List pipelines for a specific team. Cannot be combined with `--all`. |
+
+</Accordion>
+
+The table output includes columns for **id**, **name**, **paused**, **public**, and **last updated**. With `--all` an additional **team** column is shown.
+
+---
+
+## fly pause-pipeline / unpause-pipeline
+
+Pausing a pipeline prevents its jobs from being scheduled. Resources are still checked, but no new builds will start until the pipeline is unpaused.
+
+<CodeGroup>
+```bash pause-pipeline
+# Pause a single pipeline
+fly -t ci pause-pipeline -p my-app
+
+# Pause all pipelines in the team
+fly -t ci pause-pipeline --all
+```
+
+```bash unpause-pipeline
+# Unpause a single pipeline
+fly -t ci unpause-pipeline -p my-app
+
+# Unpause all pipelines in the team
+fly -t ci unpause-pipeline --all
+```
+</CodeGroup>
+
+<Accordion title="Shared flags (both commands)">
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--pipeline` | `-p` | Pipeline to pause or unpause. Mutually exclusive with `--all`. |
+| `--all` | `-a` | Pause or unpause all pipelines in the team. |
+| `--team` | | Target a different team than the default. |
+
+</Accordion>
+
+<Note>
+  Newly created pipelines are paused by default. Always run `unpause-pipeline` after `set-pipeline` when configuring a pipeline for the first time.
+</Note>
+
+---
+
+## fly expose-pipeline / hide-pipeline
+
+An exposed pipeline and its build history are visible to **unauthenticated** users via the Concourse web UI. Hiding a pipeline reverses this, making it accessible only to authenticated team members.
+
+<CodeGroup>
+```bash expose-pipeline
+# Make a pipeline publicly visible (no login required to view)
+fly -t ci expose-pipeline -p my-app
+```
+
+```bash hide-pipeline
+# Revert to team-only visibility
+fly -t ci hide-pipeline -p my-app
+```
+</CodeGroup>
+
+Both commands accept `--pipeline / -p` (required) and `--team` (optional).
+
+<Warning>
+  Exposing a pipeline makes **all** of its build output, resource versions, and configuration visible to the public internet (or anyone with network access to the Concourse server). Only expose pipelines whose logs contain no secrets.
+</Warning>
+
+---
+
+## fly rename-pipeline
+
+`rename-pipeline` renames an existing pipeline. This also renames instanced pipeline groups. Neither the old name nor the new name may contain `/`.
+
+```bash
+fly -t ci rename-pipeline -o old-name -n new-name
+```
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--old-name` | `-o` | **(Required)** Current pipeline or instance group name. |
+| `--new-name` | `-n` | **(Required)** New name for the pipeline or instance group. |
+| `--team` | | Target a different team than the default. |
+
+---
+
+## fly destroy-pipeline
+
+`destroy-pipeline` permanently deletes a pipeline and all associated build history, resource versions, and configuration. **This action cannot be undone.**
+
+```bash
+# Destroy with interactive confirmation
+fly -t ci destroy-pipeline -p my-app
+
+# Destroy without confirmation (e.g. in automation)
+fly -t ci destroy-pipeline -p my-app -n
+```
+
+<Accordion title="All destroy-pipeline flags">
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--pipeline` | `-p` | **(Required)** Pipeline to destroy. |
+| `--non-interactive` | `-n` | Skip the confirmation prompt. |
+| `--team` | | Target a different team than the default. |
+
+</Accordion>
+
+<Warning>
+  `destroy-pipeline` removes **all data** for the pipeline — build history, resource versions, and the configuration itself. Consider `archive-pipeline` if you want to retain history.
+</Warning>
+
+---
+
+## fly archive-pipeline
+
+`archive-pipeline` puts a pipeline into an archived state: it is paused, hidden from the default pipelines view, and its configuration is removed. Build history is retained. Use `--include-archived` with `fly pipelines` to see archived entries.
+
+```bash
+# Archive a single pipeline (prompts for confirmation)
+fly -t ci archive-pipeline -p my-app
+
+# Archive without confirmation
+fly -t ci archive-pipeline -p my-app --non-interactive
+
+# Archive all currently active pipelines in the team
+fly -t ci archive-pipeline --all
+```
+
+<Accordion title="All archive-pipeline flags">
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--pipeline` | `-p` | Pipeline to archive. Mutually exclusive with `--all`. |
+| `--all` | `-a` | Archive all non-archived pipelines in the team. |
+| `--non-interactive` | `-n` | Skip the confirmation prompt. |
+| `--team` | | Target a different team than the default. |
+
+</Accordion>
+
+<Note>
+  Archiving is the preferred alternative to `destroy-pipeline` when you want to remove a pipeline from active use while keeping its build history available for auditing.
+</Note>

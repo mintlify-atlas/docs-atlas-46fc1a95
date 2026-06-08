@@ -1,20 +1,95 @@
 ---
-title: "Introduction"
-description: "Welcome to your project"
+title: "Concourse CI: Container-Based Automation at Scale"
+sidebarTitle: "Home"
+description: "Concourse is an open-source CI/CD system built on containers and declarative YAML pipelines. Run reproducible builds, automate deployments, and scale workers on demand."
 ---
 
-Write a short description of your product here. What it does, who it's for, and what they can accomplish with it.
+Concourse is an automation system written in Go that runs every task in an isolated container, enforces immutable build environments, and models your entire delivery pipeline in version-controlled YAML. It ships as a single binary and scales from a single Docker Compose node to a multi-worker production cluster.
 
-<Tip>
-  Ready to make this your own? Start by editing this page. Update your `docs.json` file to customize your site. Then fill out the [Quickstart](/quickstart) page.
-</Tip>
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Run a working Concourse pipeline with Docker Compose in under five minutes.
+  </Card>
+  <Card title="Core Concepts" icon="lightbulb" href="/core-concepts">
+    Understand pipelines, resources, jobs, tasks, and the worker model.
+  </Card>
+  <Card title="Pipeline Reference" icon="diagram-project" href="/pipelines/overview">
+    Learn the complete YAML pipeline configuration schema.
+  </Card>
+  <Card title="fly CLI" icon="terminal" href="/fly/overview">
+    Manage pipelines, trigger builds, and interact with workers from the command line.
+  </Card>
+</CardGroup>
 
-<Card title="Quickstart" icon="rocket" href="/quickstart">
-  This card links to the quickstart page in your project.
-</Card>
-<Card title="Components" icon="puzzle-piece" href="https://mintlify.com/docs/components">
-  Add cards, callouts, steps, tabs, and more to design and structure your pages.
-</Card>
-<Card title="Settings" icon="gear" href="https://mintlify.com/docs/organize/settings">
-  Set your site name, branding, and navigation in the `docs.json` file.
-</Card>
+## What Makes Concourse Different
+
+Concourse pipelines are entirely **declarative YAML** — there is no GUI for building or editing pipelines. Every build runs in an **ephemeral container** spun up fresh for each task, and workers are **stateless** so they can be scaled, replaced, or lost without affecting builds. Resources are versioned artifacts (Git commits, Docker images, S3 objects) that trigger jobs and carry outputs between them.
+
+<CardGroup cols={3}>
+  <Card title="Declarative Pipelines" icon="file-code">
+    Define resources, jobs, and steps in YAML. Store configs in version control alongside your application code.
+  </Card>
+  <Card title="Container Isolation" icon="box">
+    Every task runs in a fresh container using containerd/runc. No shared state between builds.
+  </Card>
+  <Card title="Pluggable Resources" icon="plug">
+    Git, S3, Docker, Helm, and hundreds of community resource types. Build your own in any language.
+  </Card>
+  <Card title="Credential Management" icon="key">
+    Native integrations with Vault, AWS SSM, CredHub, and Kubernetes Secrets.
+  </Card>
+  <Card title="Teams & RBAC" icon="users">
+    Multi-tenant isolation within a single cluster. Fine-grained role-based access control per team.
+  </Card>
+  <Card title="Scalable Workers" icon="server">
+    Add or remove workers at any time. TSA-based SSH registration supports reverse-tunnel workers.
+  </Card>
+</CardGroup>
+
+## Get Up and Running
+
+<Steps>
+  <Step title="Start Concourse with Docker Compose">
+    Download the sample compose file and start all services:
+    ```bash
+    wget https://concourse-ci.org/docker-compose.yml
+    docker compose up -d
+    ```
+    Concourse is now running at `http://localhost:8080` with credentials `test` / `test`.
+  </Step>
+  <Step title="Download fly and log in">
+    Download `fly` from the web UI or the releases page, then authenticate:
+    ```bash
+    fly -t ci login -c http://localhost:8080 -u test -p test
+    ```
+  </Step>
+  <Step title="Set your first pipeline">
+    Create a `hello-world.yml` pipeline file and apply it:
+    ```bash
+    fly -t ci set-pipeline -p hello-world -c hello-world.yml
+    fly -t ci unpause-pipeline -p hello-world
+    ```
+  </Step>
+  <Step title="Trigger a build and watch it run">
+    ```bash
+    fly -t ci trigger-job -j hello-world/say-hello --watch
+    ```
+  </Step>
+</Steps>
+
+## Explore the Documentation
+
+<CardGroup cols={2}>
+  <Card title="Pipelines" icon="diagram-project" href="/pipelines/overview">
+    Full pipeline schema: resources, jobs, groups, var sources, and display configuration.
+  </Card>
+  <Card title="Steps Reference" icon="list-check" href="/steps/get">
+    Every step type documented: get, put, task, set_pipeline, load_var, and modifiers.
+  </Card>
+  <Card title="Credentials & Vars" icon="lock" href="/credentials/overview">
+    Integrate Vault, AWS SSM, CredHub, or Kubernetes Secrets for secret management.
+  </Card>
+  <Card title="Operations Guide" icon="gear" href="/operations/deployment">
+    Deploy to Docker, Kubernetes, or bare metal. Manage workers, teams, and upgrades.
+  </Card>
+</CardGroup>

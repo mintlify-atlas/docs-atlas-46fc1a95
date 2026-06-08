@@ -1,0 +1,248 @@
+---
+title: "set_pipeline and load_var steps in Concourse builds"
+sidebarTitle: "set_pipeline"
+description: "Update pipeline definitions and load runtime variables from files using the set_pipeline and load_var steps inside a Concourse build plan."
+---
+
+Concourse provides two steps for managing pipeline configuration and runtime variables from within a running build. The `set_pipeline` step lets a job update any pipeline's definition — including its own — by reading a pipeline YAML file from a fetched resource. The `load_var` step reads a file and exposes its contents as a local variable that can be referenced in subsequent steps within the same build. Together, these steps enable self-updating pipelines, dynamic configuration, and passing structured data between tasks without writing to shared state.
+
+---
+
+## `set_pipeline`
+
+The `set_pipeline` step applies a pipeline configuration file to a named pipeline, creating it if it does not exist or updating it if it does. This is the runtime equivalent of running `fly set-pipeline`, but executed from inside a build. It is commonly used to keep pipeline definitions in version control and automatically apply them whenever the repository changes.
+
+### Fields
+
+<ParamField path="set_pipeline" type="string" required>
+  The name of the pipeline to create or update. Use the special value `self`
+  to update the pipeline that contains this build — a common pattern for
+  self-updating pipelines.
+</ParamField>
+
+<ParamField path="file" type="string" required>
+  Path to the pipeline YAML file to apply, relative to a fetched resource's
+  directory. For example, `repo/ci/pipeline.yml` reads `pipeline.yml` from
+  the `repo` input.
+</ParamField>
+
+<ParamField path="vars" type="map">
+  A map of template variable names to values, used to interpolate
+  `((var-name))` placeholders in the pipeline file. Equivalent to the `-v`
+  flag on `fly set-pipeline`.
+</ParamField>
+
+<ParamField path="var_files" type="string[]">
+  A list of paths to YAML files containing template variable definitions.
+  Variables from these files are merged with those in `vars`. Equivalent to
+  the `-l` flag on `fly set-pipeline`.
+</ParamField>
+
+<ParamField path="instance_vars" type="map">
+  A key/value map used to create or update an **instanced pipeline**. Instance
+  vars uniquely identify a pipeline instance within a group, allowing multiple
+  variants of the same pipeline template to run concurrently. For example,
+  `{branch: main}` and `{branch: feature-x}` create two separate instances.
+</ParamField>
+
+<ParamField path="team" type="string">
+  Set a pipeline in a different team. Requires that the current team has been
+  granted cross-team pipeline-creation permissions by the target team.
+</ParamField>
+
+### Examples
+
+<CodeGroup>
+
+```yaml Apply a pipeline file with vars
+- get: repo
+  trigger: true
+- set_pipeline: deploy-pipeline
+  file: repo/ci/deploy.yml
+  vars:
+    environment: staging
+    region: us-east-1
+  var_files:
+    - repo/ci/vars/staging.yml
+```
+
+```yaml Self-updating pipeline
+- get: repo
+  trigger: true
+- set_pipeline: self
+  file: repo/ci/pipeline.yml
+```
+
+```yaml Instanced pipeline per branch
+- get: repo
+  trigger: true
+- set_pipeline: branch-pipeline
+  file: repo/ci/branch.yml
+  instance_vars:
+    branch: ((.:git-branch))
+  vars:
+    repo_url: https://github.com/myorg/myapp
+```
+
+```yaml Set pipeline in another team
+- set_pipeline: shared-infra
+  file: repo/ci/infra.yml
+  team: platform-team
+```
+
+</CodeGroup>
+
+<Note>
+  When using `set_pipeline: self`, the updated pipeline definition takes
+  effect for **subsequent** builds, not the currently running one. This means
+  changes made in this build's pipeline file will only be visible starting
+  from the next build trigger.
+</Note>
+
+<Tip>
+  Combine `get` with `trigger: true` and `set_pipeline: self` so that any
+  commit to the pipeline file in your repository automatically updates the
+  running pipeline — no manual `fly set-pipeline` needed.
+</Tip>
+
+---
+
+## `load_var`
+
+The `load_var` step reads a file and stores its contents as a **local
+variable** scoped to the current build. Local variables are referenced in
+subsequent steps using the `.:var-name` syntax (note the leading dot), which
+distinguishes them from credential manager variables. They are never persisted
+beyond the build and are redacted from logs by default.
+
+### Fields
+
+<ParamField path="load_var" type="string" required>
+  The name to assign to the variable within this build. Referenced as
+  `((.:name))` in subsequent steps.
+</ParamField>
+
+<ParamField path="file" type="string" required>
+  Path to the file to load, relative to a fetched resource's directory. The
+  file's content is parsed according to the `format` field.
+</ParamField>
+
+<ParamField path="format" type="string">
+  How to parse the file's contents. One of:
+
+  - `detect` *(default)* — infer format from the file extension (`.yml` /
+    `.yaml` → YAML, `.json` → JSON, anything else → `raw`).
+  - `yaml` — parse as YAML; the resulting variable is a map or list.
+  - `json` — parse as JSON; the resulting variable is a map or list.
+  - `raw` — treat the entire file content as a plain string.
+</ParamField>
+
+<ParamField path="reveal" type="boolean">
+  When `true`, allow the variable's value to appear in build output logs.
+  Defaults to `false` — values are redacted from logs even if they are not
+  secret. Set to `true` only for non-sensitive values where visibility aids
+  debugging.
+</ParamField>
+
+### Examples
+
+<CodeGroup>
+
+```yaml Load a plain version string
+- get: version
+- load_var: current-version
+  file: version/version
+  format: raw
+  reveal: true              # safe to display — not a secret
+- task: build
+  config:
+    platform: linux
+    image_resource:
+      type: registry-image
+      source: {repository: alpine}
+    params:
+      VERSION: ((.:current-version))
+    run:
+      path: echo
+      args: ["Building version ((.:current-version))"]
+```
+
+```yaml Load structured YAML
+- get: config-repo
+- load_var: deploy-config
+  file: config-repo/environments/staging.yml
+  format: yaml
+- task: deploy
+  config:
+    platform: linux
+    image_resource:
+      type: registry-image
+      source: {repository: alpine}
+    params:
+      REGION: ((.:deploy-config.region))
+      CLUSTER: ((.:deploy-config.cluster))
+    run:
+      path: ./deploy.sh
+```
+
+```yaml Load JSON output from a task
+- task: generate-config
+  config:
+    platform: linux
+    image_resource:
+      type: registry-image
+      source: {repository: alpine}
+    outputs:
+      - name: generated
+    run:
+      path: sh
+      args:
+        - -c
+        - echo '{"version":"1.2.3","env":"prod"}' > generated/config.json
+- load_var: build-config
+  file: generated/config.json
+  format: json
+- task: use-config
+  config:
+    platform: linux
+    image_resource:
+      type: registry-image
+      source: {repository: alpine}
+    params:
+      APP_VERSION: ((.:build-config.version))
+    run:
+      path: echo
+      args: ["Deploying ((.:build-config.version)) to ((.:build-config.env))"]
+```
+
+</CodeGroup>
+
+### Accessing local variable values
+
+Local variables loaded with `load_var` use the `.:` prefix to distinguish
+them from variables sourced from a credential manager:
+
+```yaml
+# Credential manager var (no dot prefix):
+MY_SECRET: ((db-password))
+
+# Local build var (dot prefix):
+APP_VERSION: ((.:current-version))
+
+# Nested field in a structured local var:
+CLUSTER_NAME: ((.:deploy-config.cluster))
+```
+
+<Warning>
+  Local variables are **not** available outside the current build. They cannot
+  be referenced by other jobs, pipelines, or `fly` commands. They are also
+  not stored in Concourse's credential manager — they exist only in memory for
+  the duration of the build.
+</Warning>
+
+<Note>
+  Values loaded with `load_var` are redacted from build logs by default
+  (`reveal: false`). If you find your variable values are showing as
+  `((.:var-name))` unexpectedly, check that you are using the `.:` prefix and
+  that the `load_var` step ran before the step trying to use the variable.
+</Note>

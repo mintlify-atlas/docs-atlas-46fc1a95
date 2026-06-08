@@ -1,47 +1,199 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get started with Concourse CI in under five minutes"
+sidebarTitle: "Quickstart"
+description: "Spin up a local Concourse cluster with Docker Compose, install fly, and run your first hello-world pipeline in just a few commands."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
+The fastest way to experience Concourse is with Docker Compose. In the steps below you will bring up a fully functional Concourse cluster on your laptop — a PostgreSQL database, an ATC web process, and a single worker — then author and run a minimal pipeline that prints "Hello, Concourse!" to the build log. The whole process takes under five minutes.
 
 ## Prerequisites
 
-Before you begin, you must have:
+- **Docker Desktop** (or Docker Engine + Docker Compose plugin) installed and running.
+- A terminal with `wget` or `curl` available (or just download the file manually in your browser).
 
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+---
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+
+  <Step title="Start Concourse with Docker Compose">
+    Download the official `docker-compose.yml` and start the cluster in detached mode:
 
     ```bash
-    npm install your-package
+    wget https://concourse-ci.org/docker-compose.yml
+    docker compose up -d
     ```
+
+    Docker Compose will pull the `concourse/concourse` image and a `postgres` image, then start three containers: `db`, `web`, and `worker`. Wait a few seconds for the health-checks to pass.
+
+    <Tip>
+      Run `docker compose logs -f web` to watch the ATC start up. You will see log lines confirming that the TSA is listening on port `2222` and the API is ready on port `8080`.
+    </Tip>
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+
+  <Step title="Open the Concourse web UI">
+    Navigate to [http://localhost:8080](http://localhost:8080) in your browser. You will be greeted by the Concourse home screen — an empty pipeline view for the `main` team.
+
+    Click **login** in the top-right corner and sign in with the default local user:
+
+    | Field | Value |
+    |---|---|
+    | Username | `test` |
+    | Password | `test` |
+
+    <Note>
+      The `test` user is a member of the **`main`** team, which is the default team created on every Concourse installation. All pipelines you set in this quickstart will live in the `main` team.
+    </Note>
+  </Step>
+
+  <Step title="Download the fly CLI">
+    The `fly` binary is served directly by your local Concourse instance so the client and server versions always match. Scroll to the bottom of the web UI home screen — you will see download links for **macOS**, **Linux**, and **Windows**.
+
+    Click the link for your platform, move the downloaded binary onto your `PATH`, and make it executable:
+
+    <Tabs>
+      <Tab title="macOS">
+        ```bash
+        # After downloading from http://localhost:8080/api/v1/cli?arch=amd64&platform=darwin
+        install ~/Downloads/fly /usr/local/bin/fly
+        ```
+      </Tab>
+      <Tab title="Linux">
+        ```bash
+        # After downloading from http://localhost:8080/api/v1/cli?arch=amd64&platform=linux
+        install ~/Downloads/fly /usr/local/bin/fly
+        ```
+      </Tab>
+      <Tab title="Windows">
+        ```powershell
+        # After downloading from http://localhost:8080/api/v1/cli?arch=amd64&platform=windows
+        # Move fly.exe to a folder that is on your PATH, e.g. C:\tools\fly.exe
+        Move-Item "$env:USERPROFILE\Downloads\fly.exe" "C:\tools\fly.exe"
+        ```
+      </Tab>
+    </Tabs>
+
+    <Tip>
+      You can also download `fly` directly from the API endpoint without opening a browser:
+      ```bash
+      curl -Lo fly "http://localhost:8080/api/v1/cli?arch=amd64&platform=linux"
+      chmod +x fly && sudo mv fly /usr/local/bin/
+      ```
+    </Tip>
+  </Step>
+
+  <Step title="Log in with fly and create a target">
+    A **target** is a named alias for a Concourse URL + team combination saved in `~/.flyrc`. Create one called `tutorial`:
 
     ```bash
-    your-cli init
+    fly -t tutorial login -c http://localhost:8080 -u test -p test
     ```
+
+    You should see:
+
+    ```
+    logging in to team 'main'
+
+    target saved
+    ```
+
+    The `-t tutorial` flag names this target. You will reuse this flag in every subsequent `fly` command. The `-c` flag sets the ATC URL, `-u` and `-p` supply the credentials for basic auth (matching `CONCOURSE_ADD_LOCAL_USER: test:test` in the Docker Compose environment).
   </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+
+  <Step title="Write a hello-world pipeline">
+    Create a file called `hello-world.yml` with the following content. This is a complete, self-contained Concourse pipeline with a single job that runs an `echo` command inside an Alpine container:
+
+    ```yaml hello-world.yml
+    jobs:
+      - name: say-hello
+        plan:
+          - task: hello
+            config:
+              platform: linux
+              image_resource:
+                type: registry-image
+                source:
+                  repository: alpine
+              run:
+                path: echo
+                args: ["Hello, Concourse!"]
+    ```
+
+    Let's break down the key fields:
+
+    | Field | Purpose |
+    |---|---|
+    | `jobs` | Top-level list of jobs in this pipeline |
+    | `name: say-hello` | The job name — used in `fly trigger-job -j hello-world/say-hello` |
+    | `plan` | Ordered list of steps the job will execute |
+    | `task: hello` | A task step — the core unit of work in Concourse |
+    | `config.platform` | The OS the task runs on (`linux`, `windows`, or `darwin`) |
+    | `config.image_resource` | The container image for this task (pulled via the `registry-image` resource type) |
+    | `config.run` | The command to execute inside the container |
+  </Step>
+
+  <Step title="Set the pipeline on Concourse">
+    Use `fly set-pipeline` (alias: `sp`) to upload `hello-world.yml` to your local Concourse. The `-p` flag names the pipeline:
 
     ```bash
-    your-cli start
+    fly -t tutorial set-pipeline -p hello-world -c hello-world.yml
     ```
+
+    `fly` will print a diff of the changes and ask you to confirm. Type `y` and press Enter. The pipeline is now stored in the Concourse database — refresh the web UI to see it appear (initially shown as **paused**, rendered with a blue banner).
   </Step>
+
+  <Step title="Unpause and trigger the pipeline">
+    New pipelines start in a **paused** state so that they do not run automatically before you have reviewed them. Unpause the pipeline and then trigger the job:
+
+    ```bash
+    fly -t tutorial unpause-pipeline -p hello-world
+    ```
+
+    Now trigger the `say-hello` job and stream its output directly to your terminal with `--watch`:
+
+    ```bash
+    fly -t tutorial trigger-job -j hello-world/say-hello --watch
+    ```
+
+    You should see the build log stream in real time:
+
+    ```
+    started hello-world/say-hello #1
+
+    initializing
+    selected worker: ...
+    ...
+    Hello, Concourse!
+    succeeded
+    ```
+
+    🎉 Your first Concourse build is complete.
+  </Step>
+
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+---
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
+## Keeping fly in sync
+
+The `fly` binary is tightly coupled to the server version — mismatches cause clear errors. Run `fly sync` at any time to re-download the correct `fly` binary from your target Concourse server:
+
+```bash
+fly -t tutorial sync
+```
+
+<Tip>
+  Add `fly -t tutorial sync` to your shell's login script if you run `fly` regularly, especially after upgrading your Concourse cluster.
 </Tip>
+
+---
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Core Concepts" icon="book-open" href="/core-concepts">
+    Understand pipelines, resources, jobs, tasks, builds, workers, and teams in depth before writing production pipelines.
+  </Card>
+  <Card title="Pipelines" icon="diagram-project" href="/pipelines/overview">
+    Explore the full pipeline schema — resources, resource types, groups, var sources, and trigger logic.
+  </Card>
+</CardGroup>

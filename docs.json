@@ -1,72 +1,93 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mintlify Starter Kit",
+  "name": "Concourse CI",
+  "theme": "aspen",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#369bdb",
+    "light": "#8ad6ec",
+    "dark": "#ffffff"
   },
-  "favicon": "/favicon.svg",
-  "navigation": {
-    "pages": [
-      {
-        "group": "Getting Started",
-        "pages": [
-          "index",
-          "quickstart"
-        ]
-      }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
+  "favicon": "https://media.brand.dev/cf1ab625-34b7-4539-8ec0-fcc5e43774e8.jpg",
   "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
     "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://app.mintlify.com"
+      "type": "github",
+      "href": "https://github.com/concourse/concourse"
     }
-  },
-  "contextual": {
-    "options": [
-      "copy",
-      "view",
-      "chatgpt",
-      "claude",
-      "perplexity",
-      "mcp",
-      "cursor",
-      "vscode"
-    ]
   },
   "footer": {
     "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
+      "github": "https://github.com/concourse/concourse"
     }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "core-concepts"
+            ]
+          },
+          {
+            "group": "Pipelines",
+            "pages": [
+              "pipelines/overview",
+              "pipelines/resources",
+              "pipelines/jobs-and-steps",
+              "pipelines/pipeline-groups"
+            ]
+          },
+          {
+            "group": "Steps",
+            "pages": [
+              "steps/get",
+              "steps/put",
+              "steps/task",
+              "steps/set-pipeline",
+              "steps/step-modifiers"
+            ]
+          },
+          {
+            "group": "Credentials & Vars",
+            "pages": [
+              "credentials/overview",
+              "credentials/vault",
+              "credentials/aws-ssm",
+              "credentials/credhub"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "operations/deployment",
+              "operations/workers",
+              "operations/teams-and-auth",
+              "operations/feature-flags"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "fly CLI",
+        "groups": [
+          {
+            "group": "fly Reference",
+            "pages": [
+              "fly/overview",
+              "fly/login-targets",
+              "fly/pipeline-commands",
+              "fly/build-commands",
+              "fly/resource-commands",
+              "fly/worker-commands",
+              "fly/team-commands"
+            ]
+          }
+        ]
+      }
+    ]
   }
 }
