@@ -65,14 +65,15 @@ fly -t ci set-team -n myteam \
 
 <Accordion title="Available auth provider flags">
 
-| Flag | Description |
-|------|-------------|
-| `--local-user username[:role]` | A user from Concourse's built-in local auth |
-| `--github-user username[:role]` | A specific GitHub user |
-| `--github-org orgname[:role]` | All members of a GitHub organisation |
-| `--github-team orgname/teamname[:role]` | Members of a specific GitHub team |
-| `--oidc-user username[:role]` | A specific OIDC user by subject |
-| `--oidc-group groupname[:role]` | Members of an OIDC group/claim |
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--local-user username[:role]` | | A user from Concourse's built-in local auth |
+| `--github-user username[:role]` | | A specific GitHub user |
+| `--github-org orgname[:role]` | | All members of a GitHub organisation |
+| `--github-team orgname/teamname[:role]` | | Members of a specific GitHub team |
+| `--oidc-user username[:role]` | | A specific OIDC user by subject |
+| `--oidc-group groupname[:role]` | | Members of an OIDC group/claim |
+| `--config` | `-c` | Path to a YAML file specifying team auth configuration (alternative to inline flags) |
 
 Role values are `owner`, `member`, and `pipeline-operator`. When no role suffix is given, `member` is used.
 

@@ -1,7 +1,7 @@
 ---
-title: "fly worker commands: list, land, retire, and prune workers"
+title: "fly worker commands: list, land, and prune Concourse workers"
 sidebarTitle: "Worker Commands"
-description: "Inspect and manage Concourse workers with fly: list state, gracefully drain for maintenance, permanently retire, or force-prune stalled workers."
+description: "Inspect and manage Concourse workers with fly: list worker state, gracefully drain for maintenance, and force-prune stalled or crashed workers."
 ---
 
 Workers are the machines that run your builds. Each worker registers with the Concourse TSA (Traffic Signing Authority), reports its platform and tags, and accepts container scheduling from the ATC (the Concourse scheduler). The `fly` CLI gives operators visibility into every registered worker and full control over the worker lifecycle — from graceful maintenance drains to emergency removal of crashed nodes.
@@ -62,20 +62,6 @@ Use `fly workers` to monitor the drain progress:
 # Watch worker state change from running → landing → landed
 watch fly -t ci workers
 ```
-
----
-
-## fly retire-worker
-
-Permanently retire a worker. Like `land-worker`, this drains currently-running containers first — but the worker is marked for **permanent removal** rather than temporary maintenance. The worker will not be able to re-register under the same name after retiring.
-
-```bash
-fly -t ci retire-worker -w worker-hostname
-```
-
-<Warning>
-Retiring a worker is intended for decommissioning a machine entirely. If you only need to take a worker offline temporarily for updates or maintenance, use `fly land-worker` instead.
-</Warning>
 
 ---
 

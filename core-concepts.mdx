@@ -19,6 +19,7 @@ The top-level keys of a pipeline YAML (defined in `atc/config.go`) are:
 ```yaml
 resources:       # versioned external artifacts the pipeline tracks
 resource_types:  # custom resource type definitions
+prototypes:      # prototype resource type definitions (experimental)
 jobs:            # the units of work
 groups:          # optional visual groupings in the web UI
 var_sources:     # credential manager integrations
@@ -125,7 +126,7 @@ jobs:
 Jobs can be triggered in two ways:
 
 - **Automatically** — when a `get` step within the plan has `trigger: true` and a new resource version is available.
-- **Manually** — via `fly trigger-job`, the web UI, or the ATC API (`POST /api/v1/teams/:team/pipelines/:pipeline/jobs/:job/builds`).
+- **Manually** — via `fly trigger-job`, the web UI, or the ATC API (`POST /api/v1/teams/:team_name/pipelines/:pipeline_name/jobs/:job_name/builds`).
 
 <Warning>
   Jobs do **not** share a filesystem between builds. If two jobs need the same resource version, both must declare their own `get` step for it. Use `passed` constraints to chain jobs and guarantee they operate on the same version.
@@ -170,7 +171,7 @@ Builds are immutable after completion. You can re-run a build using `fly rerun-b
 
 ## Worker
 
-A **worker** is a machine running the `concourse worker` process alongside a container runtime. Concourse defaults to **containerd** (via the Guardian runtime) for container execution and **baggageclaim** for ephemeral volume management.
+A **worker** is a machine running the `concourse worker` process alongside a container runtime. Concourse supports **containerd** (the default, set via `CONCOURSE_RUNTIME: containerd`) and **guardian** as container runtimes, and uses **baggageclaim** for ephemeral volume management.
 
 Workers are **stateless** by design. They register with the ATC through the TSA SSH gateway, heartbeat periodically to remain active, and can be replaced or scaled horizontally at any time without cluster downtime. When a worker registers it advertises its platform (`linux`, `windows`, `darwin`), available tags, and current resource capacity.
 
@@ -245,7 +246,7 @@ The ATC is horizontally scalable — multiple ATC instances can run behind a loa
 
 ---
 
-## TSA — Token Security Authority
+## TSA — Worker SSH Gateway
 
 The **TSA** is the SSH gateway embedded inside the `concourse web` process. It listens on port `2222` and is the only path through which workers join the cluster. Workers open a reverse SSH tunnel to the TSA and register themselves; the ATC then uses this established connection to forward work to the worker.
 

@@ -19,7 +19,6 @@ type ResourceConfig struct {
     WebhookToken         string      `json:"webhook_token,omitempty"`
     Type                 string      `json:"type"`
     Source               Source      `json:"source"`
-    Defaults             Source      `json:"defaults,omitempty"`
     CheckEvery           *CheckEvery `json:"check_every,omitempty"`
     CheckTimeout         string      `json:"check_timeout,omitempty"`
     Tags                 Tags        `json:"tags,omitempty"`
@@ -88,11 +87,6 @@ type ResourceConfig struct {
   A [Material Design icon](https://materialdesignicons.com/) name (without the
   `mdi-` prefix) displayed next to the resource name in the web UI, e.g.
   `github`, `docker`, `aws`.
-</ParamField>
-
-<ParamField path="defaults" type="object">
-  Default `source` values merged into every `get` and `put` step that references
-  this resource. Step-level `params` take precedence over `defaults`.
 </ParamField>
 
 <ParamField path="expose_build_created_by" type="boolean" default="false">
@@ -179,7 +173,7 @@ When `webhook_token` is set, Concourse registers an HTTP endpoint that external 
 
 **Endpoint format:**
 
-```
+```http
 POST /api/v1/teams/:team_name/pipelines/:pipeline_name/resources/:resource_name/check/webhook?webhook_token=TOKEN
 ```
 
@@ -260,7 +254,7 @@ resource_types:
       tag: latest
 ```
 
-The `ResourceType` struct supports the same fields as `ResourceConfig` plus `privileged` and `params`:
+The `ResourceType` struct shares most fields with `ResourceConfig` but adds `defaults`, `privileged`, and `params`, and does not include `webhook_token`, `expose_build_created_by`, or `version`:
 
 <ParamField path="name" type="string" required>
   Unique name for this resource type, referenced by `type:` in resource entries.

@@ -1,5 +1,5 @@
 ---
-title: "Jobs and build plans in Concourse pipelines"
+title: "Concourse CI pipeline jobs, build steps, and plans"
 sidebarTitle: "Jobs & Steps"
 description: "JobConfig fields and every build-plan step type: get, put, task, set_pipeline, do, in_parallel, try, across, timeout, attempts, and lifecycle hooks."
 ---
@@ -76,11 +76,6 @@ Every entry in the `jobs` list maps to the `JobConfig` struct in [`atc/job_confi
 
 <ParamField path="disable_reruns" type="boolean" default="false">
   Prevent users from re-running completed builds via the UI or API.
-</ParamField>
-
-<ParamField path="tags" type="[]string">
-  Run this job's builds on workers that have all the specified tags. Useful for
-  targeting specific infrastructure (e.g. GPU workers, air-gapped networks).
 </ParamField>
 
 <ParamField path="on_success" type="Step">

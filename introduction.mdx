@@ -37,9 +37,9 @@ A Concourse cluster is made up of a small number of collaborating processes.
 
 **ATC (Air Traffic Controller)** is the Concourse web process. It serves the REST API (rooted at `/api/v1/`), renders the web UI, schedules builds, and manages all persistent state in a PostgreSQL database. The `concourse web` subcommand starts the ATC.
 
-**TSA (Token Security Authority)** is the SSH gateway embedded inside the `web` process. Workers connect to the TSA on port `2222` using an SSH reverse tunnel to register themselves with the ATC. This means workers never need an inbound network path — they reach out to the TSA and the ATC communicates back over the established tunnel.
+**TSA** is the SSH gateway embedded inside the `web` process. Workers connect to the TSA on port `2222` using an SSH reverse tunnel to register themselves with the ATC. This means workers never need an inbound network path — they reach out to the TSA and the ATC communicates back over the established tunnel.
 
-**Workers** are machines running the `concourse worker` process alongside a container runtime (containerd by default). Workers execute tasks in isolated containers, stream build logs back to the ATC over the tunnel, and report their current capacity via periodic heartbeats. Workers are entirely stateless — volumes are managed by a co-located `baggageclaim` process that lives only for the duration of a build.
+**Workers** are machines running the `concourse worker` process alongside a container runtime (containerd by default). Workers execute tasks in isolated containers, stream build logs back to the ATC over the tunnel, and report their current capacity via periodic heartbeats. Workers are entirely stateless — volumes are managed by a co-located `baggageclaim` service; volumes themselves are ephemeral and discarded after each build completes.
 
 **PostgreSQL** is the single source of truth for all cluster state: build history, resource versions, pipeline configurations, team membership, and credentials metadata. The ATC owns the schema and runs migrations with `concourse migrate`.
 

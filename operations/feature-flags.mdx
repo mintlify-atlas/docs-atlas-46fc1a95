@@ -25,14 +25,14 @@ CONCOURSE_ENABLE_GLOBAL_RESOURCES: "true"
   Global resources is most impactful in organisations with many pipelines that share common base images or library repositories. With it disabled (the default), every pipeline checks its resources independently.
 </Note>
 
-### `CONCOURSE_ENABLE_BUILD_RERUN_WHEN_WORKER_DISAPPEARS`
+### `CONCOURSE_ENABLE_RERUN_WHEN_WORKER_DISAPPEARS`
 
 **Go variable:** `EnableBuildRerunWhenWorkerDisappears` · **Feature key:** `build_rerun`
 
 Automatically reschedule a build if the worker it was running on disappears unexpectedly — for example, due to a spot/preemptible instance being reclaimed by the cloud provider, a kernel panic, or a network partition. Without this flag, such builds are left in an `errored` state and must be manually re-triggered.
 
 ```yaml
-CONCOURSE_ENABLE_BUILD_RERUN_WHEN_WORKER_DISAPPEARS: "true"
+CONCOURSE_ENABLE_RERUN_WHEN_WORKER_DISAPPEARS: "true"
 ```
 
 <Warning>
@@ -89,7 +89,7 @@ This is a safe default for development clusters that serves as a good starting p
 | Environment variable | Feature key | Default | Description |
 |---|---|:---:|---|
 | `CONCOURSE_ENABLE_GLOBAL_RESOURCES` | `global_resources` | `false` | Share resource check caches across pipelines |
-| `CONCOURSE_ENABLE_BUILD_RERUN_WHEN_WORKER_DISAPPEARS` | `build_rerun` | `false` | Auto-rerun builds whose worker disappears |
+| `CONCOURSE_ENABLE_RERUN_WHEN_WORKER_DISAPPEARS` | `build_rerun` | `false` | Auto-rerun builds whose worker disappears |
 | `CONCOURSE_ENABLE_CACHE_STREAMED_VOLUMES` | `cache_streamed_volumes` | `false` | Cache volumes streamed from other workers |
 | `CONCOURSE_ENABLE_RESOURCE_CAUSALITY` | `resource_causality` | `false` | Show causality chains in the UI |
 | `CONCOURSE_DISABLE_REDACT_SECRETS` | *(security toggle)* | `false` | Disable automatic secret redaction in logs |

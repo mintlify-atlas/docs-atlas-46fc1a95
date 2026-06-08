@@ -1,7 +1,7 @@
 ---
 title: Teams, RBAC, and authentication configuration in Concourse
 sidebarTitle: Teams & Auth
-description: Set up Concourse teams, assign RBAC roles (owner/member/operator/viewer), and configure local users, GitHub OAuth, or OIDC as authentication providers.
+description: "Set up Concourse teams, assign RBAC roles (owner/member/pipeline-operator/viewer), and configure local users, GitHub OAuth, or OIDC providers."
 ---
 
 Teams are the primary isolation boundary in Concourse. Every pipeline belongs to a team, credential manager paths are namespaced per team, and workers can be pinned to a single team. The `main` team is created automatically when the database is first initialised and cannot be deleted — members of `main` are the super-administrators who can create, configure, and destroy all other teams. Authentication is handled by Skymarshal (an embedded [Dex](https://dexidp.io/) instance) and supports local users, GitHub, OIDC, LDAP, Bitbucket Cloud, and Cloud Foundry UAA out of the box.

@@ -1,5 +1,5 @@
 ---
-title: "Pipeline configuration reference for Concourse CI"
+title: "Concourse CI pipeline YAML configuration reference"
 sidebarTitle: "Overview"
 description: "Complete reference for Concourse pipeline YAML schema — groups, resources, resource_types, jobs, var_sources, prototypes, display, and user_data fields."
 ---
@@ -160,7 +160,7 @@ display:
 
 When `fly` saves a pipeline with `set-pipeline`, it reads the current config version from Concourse and includes it in the `X-Concourse-Config-Version` request header. This prevents accidental overwrites caused by concurrent edits.
 
-```
+```http
 X-Concourse-Config-Version: 42
 ```
 
